@@ -227,6 +227,7 @@ async function start() {
           storeMessage(msg);
 
           const preview = extractText(msg?.message);
+          console.log("MESSAGE TYPES:", Object.keys(msg?.message || {}));
           console.log(
             "MESSAGE RECEIVED:",
             msg?.key?.remoteJid || "unknown",
