@@ -227,6 +227,7 @@ async function start() {
           storeMessage(msg);
 
           const preview = extractText(msg?.message);
+          console.log("MESSAGE META:", { stub: msg?.messageStubType ?? null, hasMessage: !!msg?.message, hasStubParams: Array.isArray(msg?.messageStubParameters), pushName: msg?.pushName ?? null, timestamp: msg?.messageTimestamp ?? null });
           console.log("MESSAGE TYPES:", Object.keys(msg?.message || {}));
           console.log(
             "MESSAGE RECEIVED:",
