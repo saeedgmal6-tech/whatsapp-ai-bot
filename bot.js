@@ -4,8 +4,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
-  proto,
-  isJidNewsletter
+  proto
 } from "@whiskeysockets/baileys";
 import NodeCache from "@cacheable/node-cache";
 import pino from "pino";
@@ -180,7 +179,6 @@ async function start() {
       shouldSyncHistoryMessage: () => false,
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
-      shouldIgnoreJid: jid => !jid || isJidNewsletter(jid)
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -215,12 +213,35 @@ async function start() {
       }
     });
 
-    sock.ev.on("messages.upsert", async ({ messages, type, requestId }) => {
+    sock.ev.process(async events => {
+      const upsert = events["messages.upsert"];
+      if (!upsert) return;
+
+      const { messages, type, requestId } = upsert;
+      console.log("MESSAGE EVENT:", type, messages?.length || 0);
+
       if (type !== "notify" || !BOT_ENABLED) return;
 
       for (const msg of messages) {
         try {
           storeMessage(msg);
+
+          const preview = extractText(msg?.message);
+          console.log(
+            "MESSAGE RECEIVED:",
+            msg?.key?.remoteJid || "unknown",
+            msg?.key?.fromMe ? "fromMe" : "incoming",
+            preview || "[no text]"
+          );
+
+          if (preview === "requestPlaceholder" && !requestId) {
+            try {
+              await sock.requestPlaceholderResend(msg.key);
+            } catch (error) {
+              console.error("Placeholder resend error:", error?.message || error);
+            }
+            continue;
+          }
 
           if (!msg?.message || msg.key?.fromMe) continue;
           if (requestId) continue;
@@ -230,11 +251,10 @@ async function start() {
           if (!REPLY_GROUPS && jid.endsWith("@g.us")) continue;
           if (!isAllowed(jid)) continue;
 
-          const text = extractText(msg.message);
+          const text = preview;
           if (!text) continue;
 
-          const number = normalizeNumber(jid);
-          console.log("Incoming:", number, text);
+          console.log("Incoming:", normalizeNumber(jid), text);
 
           const reply = await askAI(jid, text);
 
