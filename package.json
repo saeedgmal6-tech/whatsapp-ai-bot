@@ -1,13 +1,14 @@
 {
   "name": "whatsapp-ai-auto-reply",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node --env-file=.env bot.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.24",
+    "@cacheable/node-cache": "^1.4.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "openai": "^6.16.0",
     "pino": "^9.7.0"
   }
