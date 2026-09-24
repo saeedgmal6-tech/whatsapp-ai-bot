@@ -104,7 +104,7 @@ async function start() {
     }
   });
 
-  await askPairingCode(sock);
+  await askPairingCode(sock, state.creds.registered);
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify" || !BOT_ENABLED) return;
