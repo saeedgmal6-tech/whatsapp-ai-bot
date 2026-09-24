@@ -9,7 +9,7 @@
   "dependencies": {
     "@cacheable/node-cache": "^1.4.0",
     "@whiskeysockets/baileys": "7.0.0-rc14",
-    "openai": "^6.16.0",
-    "pino": "^9.7.0"
+    "pino": "^9.7.0",
+    "@google/genai": "^1.19.0"
   }
 }
