@@ -8,10 +8,9 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import NodeCache from "@cacheable/node-cache";
 import pino from "pino";
-import OpenAI from "openai";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const BOT_ENABLED = (process.env.BOT_ENABLED || "true").toLowerCase() === "true";
 const REPLY_GROUPS = (process.env.REPLY_GROUPS || "false").toLowerCase() === "true";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
@@ -23,12 +22,11 @@ const ALLOWED_NUMBERS = new Set(
     .filter(Boolean)
 );
 
-if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY in .env");
+if (!GEMINI_API_KEY) {
+  console.error("Missing GEMINI_API_KEY in .env");
   process.exit(1);
 }
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const logger = pino({ level: "silent" });
 
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || `
@@ -116,17 +114,40 @@ async function askAI(jid, text) {
     { role: "user", content: text }
   ];
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    instructions: SYSTEM_PROMPT,
-    input,
-    max_output_tokens: 500
+  const contents = input.map(item => ({
+    role: item.role === "assistant" ? "model" : "user",
+    parts: [{ text: item.content }]
+  }));
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": GEMINI_API_KEY
+    },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents,
+      generationConfig: {
+        maxOutputTokens: 500,
+        temperature: 0.8
+      }
+    })
   });
 
-  const reply = response.output_text?.trim();
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(`Gemini API ${response.status}: ${data?.error?.message || "request failed"}`);
+  }
+
+  const reply = data?.candidates?.[0]?.content?.parts
+    ?.map(part => part.text || "")
+    .join("")
+    .trim();
 
   if (!reply) {
-    throw new Error("OpenAI returned an empty response");
+    throw new Error("Gemini returned an empty response");
   }
 
   return reply;
