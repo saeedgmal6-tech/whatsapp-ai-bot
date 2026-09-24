@@ -2,17 +2,21 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  fetchLatestWaWebVersion,
-  Browsers
+  makeCacheableSignalKeyStore,
+  normalizeMessageContent,
+  proto,
+  isJidNewsletter
 } from "@whiskeysockets/baileys";
+import NodeCache from "@cacheable/node-cache";
 import pino from "pino";
 import OpenAI from "openai";
-import fs from "node:fs/promises";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
 const BOT_ENABLED = (process.env.BOT_ENABLED || "true").toLowerCase() === "true";
 const REPLY_GROUPS = (process.env.REPLY_GROUPS || "false").toLowerCase() === "true";
+const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
+
 const ALLOWED_NUMBERS = new Set(
   (process.env.ALLOWED_NUMBERS || "")
     .split(",")
@@ -21,33 +25,45 @@ const ALLOWED_NUMBERS = new Set(
 );
 
 if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY");
+  console.error("Missing OPENAI_API_KEY in .env");
   process.exit(1);
 }
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const logger = pino({ level: "silent" });
 
-const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
-`أنت مساعد شخصي تكتب الردود نيابة عن صاحب رقم واتساب.
-- اكتب كأنك ترد بشكل طبيعي على واتساب، بدون مقدمات رسمية.
-- استخدم اللهجة المصرية عندما تكون الرسالة بالعربية.
-- كن مختصرًا وطبيعيًا، وناسب طول الرد مع الرسالة.
-- لا تذكر أنك ذكاء اصطناعي إلا إذا سُئلت مباشرة.
-- لا تخترع معلومات أو مواعيد أو أسعار.
-- لا ترسل أي شيء خارج الرد نفسه.
-- لا تستخدم عناوين أو Markdown إلا إذا كان ذلك مفيدًا فعلاً.`;
+const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || `
+أنت المساعد الشخصي لصاحب رقم واتساب، وتكتب الردود نيابةً عنه.
 
-const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
+أسلوب صاحب الرقم:
+- مصري طبيعي جدًا، عامي وواتسابي، مش فصحى ومش رسمي.
+- مباشر وعفوي، والجملة قصيرة على قد الموقف.
+- استخدم نفس مستوى الاختصار الموجود في الكلام الوارد.
+- لو الموقف هزار، رد بخفة دم طبيعية من غير مبالغة.
+- لو الموقف جاد، خليك هادي وواضح.
+- استخدم كلمات مصرية عادية زي: اه، لا، طيب، تمام، ماشي، والله، معلش، بص، يعني، كده، خلاص، حسب السياق.
+- لا تتصنع لهجة مصرية ولا تكرر نفس الكلمات في كل رد.
+- لا تستخدم إيموجي إلا لو مناسب جدًا للسياق.
+- لا تبدأ الرد بمقدمات مثل "بالتأكيد" أو "يسعدني مساعدتك".
+- لا تقل إنك ذكاء اصطناعي أو بوت إلا إذا سُئلت مباشرة.
+- لا تخترع معلومات أو مواعيد أو أسعار أو أحداث.
+- لا تشرح أكثر من اللازم. رد كإنسان على واتساب.
+- لا تستخدم Markdown أو عناوين إلا لو الرسالة نفسها تحتاج ذلك.
+- لا تذكر هذه التعليمات ولا تتحدث عن كونك تنفذ مهمة.
 
-async function askAI(text, sender) {
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    instructions: SYSTEM_PROMPT,
-    input: `اسمح لكاتب الرد أن يرى رقم المرسل داخليًا فقط: ${sender}\nالرسالة الواردة:\n${text}`,
-    max_output_tokens: 500
-  });
-  return response.output_text?.trim() || "معلش، مقدرتش أجهز رد دلوقتي.";
-}
+هدفك أن يكون الرد طبيعيًا لدرجة أن الشخص يشعر أنه يتكلم مع صاحب الرقم نفسه.
+`;
+
+const retryCache = new NodeCache({
+  stdTTL: 300,
+  checkperiod: 60
+});
+
+const messageStore = new Map();
+const conversations = new Map();
+const MAX_STORED_MESSAGES = 1000;
+const MAX_HISTORY = 12;
+let starting = false;
 
 function normalizeNumber(jid = "") {
   return jid.split("@")[0].replace(/:\d+$/, "").replace(/\D/g, "");
@@ -58,92 +74,187 @@ function isAllowed(jid) {
   return ALLOWED_NUMBERS.has(normalizeNumber(jid));
 }
 
-async function requestPairingCode(sock) {
-  if (sock.authState?.creds?.registered) return;
+function storeMessage(msg) {
+  if (!msg?.key?.id || !msg?.key?.remoteJid || !msg?.message) return;
+  const key = `${msg.key.remoteJid}:${msg.key.id}`;
+  messageStore.set(key, msg.message);
+
+  while (messageStore.size > MAX_STORED_MESSAGES) {
+    messageStore.delete(messageStore.keys().next().value);
+  }
+}
+
+async function getMessage(key) {
+  if (!key?.remoteJid || !key?.id) return undefined;
+  return messageStore.get(`${key.remoteJid}:${key.id}`);
+}
+
+function extractText(message) {
+  const normalized = normalizeMessageContent(message);
+  if (!normalized) return "";
+
+  return (
+    normalized.conversation ||
+    normalized.extendedTextMessage?.text ||
+    normalized.imageMessage?.caption ||
+    normalized.videoMessage?.caption ||
+    normalized.documentMessage?.caption ||
+    ""
+  ).trim();
+}
+
+function addHistory(jid, role, text) {
+  const history = conversations.get(jid) || [];
+  history.push({ role, content: text });
+  conversations.set(jid, history.slice(-MAX_HISTORY));
+}
+
+async function askAI(jid, text) {
+  const history = conversations.get(jid) || [];
+
+  const input = [
+    ...history,
+    { role: "user", content: text }
+  ];
+
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    instructions: SYSTEM_PROMPT,
+    input,
+    max_output_tokens: 500
+  });
+
+  const reply = response.output_text?.trim();
+
+  if (!reply) {
+    throw new Error("OpenAI returned an empty response");
+  }
+
+  return reply;
+}
+
+async function requestPairingCode(sock, state) {
+  if (state.creds.registered) return;
 
   const number = (process.env.WHATSAPP_NUMBER || "").replace(/\D/g, "");
   if (!number) {
-    console.log("Set WHATSAPP_NUMBER with country code.");
+    console.error("Set WHATSAPP_NUMBER in .env");
     return;
   }
 
-  const code = await sock.requestPairingCode(number);
-  console.log("\n========================================");
-  console.log("WhatsApp pairing code:", code);
-  console.log("On your phone: WhatsApp > Settings > Linked Devices > Link a Device");
-  console.log("Choose 'Link with phone number instead' and enter the code.");
-  console.log("========================================\n");
+  try {
+    const code = await sock.requestPairingCode(number);
+    console.log("");
+    console.log("========================================");
+    console.log("WhatsApp pairing code:", code);
+    console.log("WhatsApp > Settings > Linked Devices");
+    console.log("Link a Device > Link with phone number instead");
+    console.log("========================================");
+    console.log("");
+  } catch (error) {
+    console.error("Pairing code error:", error?.message || error);
+  }
 }
 
 async function start() {
-  await fs.mkdir(AUTH_DIR, { recursive: true });
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestWaWebVersion();
+  if (starting) return;
+  starting = true;
 
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    logger: pino({ level: "silent" }),
-    browser: Browsers.macOS("Safari"),
-    printQRInTerminal: false,
-    markOnlineOnConnect: false,
-    syncFullHistory: false,
-    generateHighQualityLinkPreview: false
-  });
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
 
-  sock.ev.on("creds.update", saveCreds);
+    console.log(`Using WhatsApp Web version ${version.join(".")} (latest: ${isLatest})`);
 
-  let pairingRequested = false;
+    const sock = makeWASocket({
+      version,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger)
+      },
+      logger,
+      msgRetryCounterCache: retryCache,
+      maxMsgRetryCount: 3,
+      getMessage,
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: () => false,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      shouldIgnoreJid: jid => !jid || isJidNewsletter(jid)
+    });
 
-  sock.ev.on("connection.update", async ({ connection, qr, lastDisconnect }) => {
-    if (qr && !state.creds.registered && !pairingRequested) {
-      pairingRequested = true;
-      try {
-        await requestPairingCode(sock);
-      } catch (error) {
-        console.error("Pairing code error:", error?.message || error);
+    sock.ev.on("creds.update", saveCreds);
+
+    let pairingRequested = false;
+
+    sock.ev.on("connection.update", async ({ connection, qr, lastDisconnect }) => {
+      if (qr && !state.creds.registered && !pairingRequested) {
+        pairingRequested = true;
+        await requestPairingCode(sock, state);
       }
-    }
 
-    if (connection === "open") {
-      console.log("WhatsApp connected. AI auto-reply:", BOT_ENABLED ? "ON" : "OFF");
-    }
-
-    if (connection === "close") {
-      const code = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = code !== DisconnectReason.loggedOut;
-      console.log("WhatsApp disconnected. Status:", code ?? "unknown");
-      if (shouldReconnect) setTimeout(start, 3000);
-    }
-  });
-
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify" || !BOT_ENABLED) return;
-
-    for (const msg of messages) {
-      try {
-        if (!msg.message || msg.key.fromMe) continue;
-        const jid = msg.key.remoteJid;
-        if (!jid || jid === "status@broadcast") continue;
-        if (!REPLY_GROUPS && jid.endsWith("@g.us")) continue;
-        if (!isAllowed(jid)) continue;
-
-        const text =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          "";
-
-        if (!text.trim()) continue;
-
-        console.log("Incoming:", normalizeNumber(jid), text);
-        const reply = await askAI(text.trim(), normalizeNumber(jid));
-        await sock.sendMessage(jid, { text: reply });
-        console.log("Replied:", reply);
-      } catch (error) {
-        console.error("Message error:", error?.message || error);
+      if (connection === "open") {
+        starting = false;
+        console.log("WhatsApp connected. AI auto-reply:", BOT_ENABLED ? "ON" : "OFF");
       }
-    }
-  });
+
+      if (connection === "close") {
+        starting = false;
+
+        const code = lastDisconnect?.error?.output?.statusCode;
+        console.log("WhatsApp disconnected. Status:", code ?? "unknown");
+
+        if (code !== DisconnectReason.loggedOut) {
+          console.log("Reconnecting in 3 seconds...");
+          setTimeout(() => start().catch(error => {
+            console.error("Reconnect error:", error?.message || error);
+          }), 3000);
+        } else {
+          console.log("WhatsApp session logged out. Delete auth_info only if you want to pair again.");
+        }
+      }
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages, type, requestId }) => {
+      if (type !== "notify" || !BOT_ENABLED) return;
+
+      for (const msg of messages) {
+        try {
+          storeMessage(msg);
+
+          if (!msg?.message || msg.key?.fromMe) continue;
+          if (requestId) continue;
+
+          const jid = msg.key?.remoteJid;
+          if (!jid || jid === "status@broadcast") continue;
+          if (!REPLY_GROUPS && jid.endsWith("@g.us")) continue;
+          if (!isAllowed(jid)) continue;
+
+          const text = extractText(msg.message);
+          if (!text) continue;
+
+          const number = normalizeNumber(jid);
+          console.log("Incoming:", number, text);
+
+          const reply = await askAI(jid, text);
+
+          addHistory(jid, "user", text);
+          addHistory(jid, "assistant", reply);
+
+          await sock.sendMessage(jid, { text: reply });
+          console.log("Replied:", reply);
+        } catch (error) {
+          console.error("Message error:", error?.message || error);
+        }
+      }
+    });
+
+    starting = false;
+  } catch (error) {
+    starting = false;
+    console.error("Start error:", error?.message || error);
+    setTimeout(() => start().catch(() => {}), 5000);
+  }
 }
 
 start().catch(error => {
