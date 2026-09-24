@@ -65,9 +65,7 @@ async function requestPairingCode(sock) {
     return;
   }
 
-  // WhatsApp's pairing flow is sensitive to the companion browser identity.
-  // Use a canonical Baileys browser tuple rather than a custom app label.
-  await new Promise(r => setTimeout(r, 1500));
+  await new Promise(r => setTimeout(r, 2000));
   const code = await sock.requestPairingCode(number);
   console.log("\\n========================================");
   console.log("WhatsApp pairing code:", code);
@@ -94,21 +92,20 @@ async function start() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  let pairingRequested = false;
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    if (connection === "open") {
-      console.log("WhatsApp connected. AI auto-reply:", BOT_ENABLED ? "ON" : "OFF");
-    }
-
-    // Request pairing only once, after the socket has started its connection flow.
-    if (qr && !sock.authState?.creds?.registered && !pairingRequested) {
-      pairingRequested = true;
+  // Give the socket time to establish the initial handshake, then request one code.
+  if (!state.creds.registered) {
+    setTimeout(async () => {
       try {
         await requestPairingCode(sock);
       } catch (error) {
-        pairingRequested = false;
         console.error("Pairing code error:", error?.message || error);
       }
+    }, 3000);
+  }
+
+  sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
+    if (connection === "open") {
+      console.log("WhatsApp connected. AI auto-reply:", BOT_ENABLED ? "ON" : "OFF");
     }
 
     if (connection === "close") {
