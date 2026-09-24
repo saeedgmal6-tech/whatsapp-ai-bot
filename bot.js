@@ -2,6 +2,7 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   Browsers
 } from "@whiskeysockets/baileys";
 import pino from "pino";
@@ -77,7 +78,7 @@ async function requestPairingCode(sock) {
 async function start() {
   await fs.mkdir(AUTH_DIR, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+  const { version } = await fetchLatestWaWebVersion();
 
   const sock = makeWASocket({
     version,
