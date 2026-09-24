@@ -15,7 +15,7 @@ const REPLY_GROUPS = (process.env.REPLY_GROUPS || "false").toLowerCase() === "tr
 const ALLOWED_NUMBERS = new Set(
   (process.env.ALLOWED_NUMBERS || "")
     .split(",")
-    .map(v => v.replace(/\\D/g, ""))
+    .map(v => v.replace(/\D/g, ""))
     .filter(Boolean)
 );
 
@@ -42,14 +42,14 @@ async function askAI(text, sender) {
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
     instructions: SYSTEM_PROMPT,
-    input: `اسمح لكاتب الرد أن يرى رقم المرسل داخليًا فقط: ${sender}\\nالرسالة الواردة:\\n${text}`,
+    input: `اسمح لكاتب الرد أن يرى رقم المرسل داخليًا فقط: ${sender}\nالرسالة الواردة:\n${text}`,
     max_output_tokens: 500
   });
   return response.output_text?.trim() || "معلش، مقدرتش أجهز رد دلوقتي.";
 }
 
 function normalizeNumber(jid = "") {
-  return jid.split("@")[0].replace(/:\\d+$/, "").replace(/\\D/g, "");
+  return jid.split("@")[0].replace(/:\d+$/, "").replace(/\D/g, "");
 }
 
 function isAllowed(jid) {
@@ -59,19 +59,19 @@ function isAllowed(jid) {
 
 async function requestPairingCode(sock) {
   if (sock.authState?.creds?.registered) return;
-  const number = (process.env.WHATSAPP_NUMBER || "").replace(/\\D/g, "");
+
+  const number = (process.env.WHATSAPP_NUMBER || "").replace(/\D/g, "");
   if (!number) {
-    console.log("Set WHATSAPP_NUMBER with country code, e.g. 2010XXXXXXXX");
+    console.log("Set WHATSAPP_NUMBER with country code.");
     return;
   }
 
-  await new Promise(r => setTimeout(r, 2000));
   const code = await sock.requestPairingCode(number);
-  console.log("\\n========================================");
+  console.log("\n========================================");
   console.log("WhatsApp pairing code:", code);
   console.log("On your phone: WhatsApp > Settings > Linked Devices > Link a Device");
   console.log("Choose 'Link with phone number instead' and enter the code.");
-  console.log("========================================\\n");
+  console.log("========================================\n");
 }
 
 async function start() {
@@ -92,18 +92,18 @@ async function start() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  // Give the socket time to establish the initial handshake, then request one code.
-  if (!state.creds.registered) {
-    setTimeout(async () => {
+  let pairingRequested = false;
+
+  sock.ev.on("connection.update", async ({ connection, qr, lastDisconnect }) => {
+    if (qr && !state.creds.registered && !pairingRequested) {
+      pairingRequested = true;
       try {
         await requestPairingCode(sock);
       } catch (error) {
         console.error("Pairing code error:", error?.message || error);
       }
-    }, 3000);
-  }
+    }
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
     if (connection === "open") {
       console.log("WhatsApp connected. AI auto-reply:", BOT_ENABLED ? "ON" : "OFF");
     }
@@ -111,7 +111,7 @@ async function start() {
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = code !== DisconnectReason.loggedOut;
-      console.log("WhatsApp disconnected.", shouldReconnect ? "Reconnecting..." : "Logged out.");
+      console.log("WhatsApp disconnected. Status:", code ?? "unknown");
       if (shouldReconnect) setTimeout(start, 3000);
     }
   });
