@@ -1,37 +1,36 @@
-# WhatsApp AI Auto Reply — Personal Android/Termux
+# WhatsApp AI Auto Reply — Android / Termux
 
-This branch connects a personal WhatsApp account as a linked device and generates automatic replies with OpenAI.
+Personal WhatsApp linked-device bot using Baileys + OpenAI.
+
+## What this version does
+
+- Uses Baileys 7.0.0-rc14 with the current WhatsApp Web version.
+- Uses cached Signal keys.
+- Uses a retry cache and local message store.
+- Disables automatic history synchronization to avoid unnecessary history/protocol traffic.
+- Handles normal text, extended text, and captions.
+- Keeps a short per-chat conversation context.
+- Replies in natural Egyptian Arabic by default.
+- Uses GPT-5.6 Luna through the OpenAI Responses API.
+- Ignores groups unless REPLY_GROUPS=true.
+- Can restrict replies with ALLOWED_NUMBERS.
+
+## First setup
+
+1. Put your OpenAI API key and WhatsApp number in .env.
+2. Start with:
+   npm start
+3. If this is a fresh session, pair the displayed code from:
+   WhatsApp > Settings > Linked Devices > Link with phone number instead
+
+The session is stored in auth_info.
 
 ## Important
 
-This uses Baileys, an unofficial WhatsApp Web client. It is not Meta's official WhatsApp Cloud API. WhatsApp may restrict or suspend accounts using unofficial automation. Use a secondary/test number if protecting your primary number is important.
+This uses an unofficial WhatsApp Web client. WhatsApp can change its protocol and can restrict automated accounts. Do not commit auth_info or .env.
 
-## Android-only setup
+For continuous Android operation, keep Termux running and exclude it from Android battery optimization.
 
-1. Install Termux from a trusted source such as F-Droid.
-2. In Termux run: `pkg update && pkg install nodejs git -y`
-3. Clone this branch:
-`git clone -b mobile-personal-whatsapp https://github.com/saeedgmal6-tech/whatsapp-ai-bot.git`
-4. Enter it: `cd whatsapp-ai-bot`
-5. Install: `npm install`
-6. Create config: `cp .env.example .env`
-7. Edit `.env` and set `OPENAI_API_KEY` and `WHATSAPP_NUMBER`.
-8. Start: `npm start`
-9. The bot prints a pairing code. In WhatsApp: Settings > Linked Devices > Link a Device > Link with phone number instead, then enter the code.
+## Security
 
-The WhatsApp session is saved in `auth_info`, so you normally do not pair again after the first successful login.
-
-## Controls
-
-- `BOT_ENABLED=true` automatic replies.
-- `REPLY_GROUPS=false` ignore groups.
-- `ALLOWED_NUMBERS=2010...,2011...` reply only to selected contacts. Empty means all private chats.
-- `SYSTEM_PROMPT` controls the AI personality.
-
-## Phone-only operation
-
-Keep Termux running. Android battery optimization can stop background processes, so exclude Termux from battery optimization and use a wake lock when continuous operation is needed.
-
-## OpenAI
-
-The bot uses the OpenAI API. A ChatGPT subscription does not by itself include API credits; API usage is billed separately.
+Never paste your OpenAI API key or the auth_info directory into chat, GitHub, screenshots, or support tickets.
