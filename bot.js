@@ -6,7 +6,6 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import OpenAI from "openai";
-import readline from "node:readline";
 import fs from "node:fs/promises";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -16,7 +15,7 @@ const REPLY_GROUPS = (process.env.REPLY_GROUPS || "false").toLowerCase() === "tr
 const ALLOWED_NUMBERS = new Set(
   (process.env.ALLOWED_NUMBERS || "")
     .split(",")
-    .map(v => v.replace(/\D/g, ""))
+    .map(v => v.replace(/\\D/g, ""))
     .filter(Boolean)
 );
 
@@ -43,14 +42,14 @@ async function askAI(text, sender) {
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
     instructions: SYSTEM_PROMPT,
-    input: `اسمح لكاتب الرد أن يرى رقم المرسل داخليًا فقط: ${sender}\nالرسالة الواردة:\n${text}`,
+    input: `اسمح لكاتب الرد أن يرى رقم المرسل داخليًا فقط: ${sender}\\nالرسالة الواردة:\\n${text}`,
     max_output_tokens: 500
   });
   return response.output_text?.trim() || "معلش، مقدرتش أجهز رد دلوقتي.";
 }
 
 function normalizeNumber(jid = "") {
-  return jid.split("@")[0].replace(/:\d+$/, "").replace(/\D/g, "");
+  return jid.split("@")[0].replace(/:\\d+$/, "").replace(/\\D/g, "");
 }
 
 function isAllowed(jid) {
@@ -58,20 +57,23 @@ function isAllowed(jid) {
   return ALLOWED_NUMBERS.has(normalizeNumber(jid));
 }
 
-async function askPairingCode(sock) {
+async function requestPairingCode(sock) {
   if (sock.authState?.creds?.registered) return;
-  const number = (process.env.WHATSAPP_NUMBER || "").replace(/\D/g, "");
+  const number = (process.env.WHATSAPP_NUMBER || "").replace(/\\D/g, "");
   if (!number) {
     console.log("Set WHATSAPP_NUMBER with country code, e.g. 2010XXXXXXXX");
     return;
   }
-  await new Promise(r => setTimeout(r, 2500));
+
+  // WhatsApp's pairing flow is sensitive to the companion browser identity.
+  // Use a canonical Baileys browser tuple rather than a custom app label.
+  await new Promise(r => setTimeout(r, 1500));
   const code = await sock.requestPairingCode(number);
-  console.log("\n========================================");
+  console.log("\\n========================================");
   console.log("WhatsApp pairing code:", code);
   console.log("On your phone: WhatsApp > Settings > Linked Devices > Link a Device");
   console.log("Choose 'Link with phone number instead' and enter the code.");
-  console.log("========================================\n");
+  console.log("========================================\\n");
 }
 
 async function start() {
@@ -83,7 +85,8 @@ async function start() {
     version,
     auth: state,
     logger: pino({ level: "silent" }),
-    browser: Browsers.ubuntu("Saeed WhatsApp AI"),
+    browser: Browsers.macOS("Safari"),
+    printQRInTerminal: false,
     markOnlineOnConnect: false,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false
@@ -91,9 +94,21 @@ async function start() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
+  let pairingRequested = false;
+  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (connection === "open") {
       console.log("WhatsApp connected. AI auto-reply:", BOT_ENABLED ? "ON" : "OFF");
+    }
+
+    // Request pairing only once, after the socket has started its connection flow.
+    if (qr && !sock.authState?.creds?.registered && !pairingRequested) {
+      pairingRequested = true;
+      try {
+        await requestPairingCode(sock);
+      } catch (error) {
+        pairingRequested = false;
+        console.error("Pairing code error:", error?.message || error);
+      }
     }
 
     if (connection === "close") {
@@ -103,8 +118,6 @@ async function start() {
       if (shouldReconnect) setTimeout(start, 3000);
     }
   });
-
-  await askPairingCode(sock, state.creds.registered);
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify" || !BOT_ENABLED) return;
