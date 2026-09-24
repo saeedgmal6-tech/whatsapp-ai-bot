@@ -29,5 +29,4 @@ Webhook URL:
 Health URL:
 `https://YOUR-RENDER-SERVICE.onrender.com/`
 
-
 Vercel deployment sync check.
