@@ -345,7 +345,7 @@ async function processIncomingMessage(sock, message) {
     rememberProcessed(id);
 
     const text = extractText(message).trim();
-    const personName = message?.pushName || message?.verifiedBizName || "";
+    const personName = getContactName(message);
     const mediaInfo = getMediaInfo(message);
 
     if (!text && !mediaInfo) {
