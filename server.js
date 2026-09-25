@@ -122,6 +122,15 @@ function rememberSentMessage(message) {
   }
 }
 
+function rememberContact(contact) {
+  const jid = contact?.id;
+  if (!jid) return;
+  const savedName = String(contact?.name || "").trim();
+  const profileName = String(contact?.notify || "").trim();
+  if (savedName) contactNames.set(jid, savedName);
+  else if (profileName && !contactNames.has(jid)) contactNames.set(jid, profileName);
+}
+
 function addHistory(jid, role, text) {
   const history = histories.get(jid) || [];
   history.push({ role, content: text });
