@@ -145,7 +145,8 @@ function unwrapMessage(message) {
 }
 
 function extractText(message) {
-  const normalized = normalizeMessageContent(message) || unwrapMessage(message) || {};
+  // Baileys normalizeMessageContent expects the IMessage payload, not the full WAMessage.
+  const normalized = normalizeMessageContent(message?.message) || unwrapMessage(message?.message) || {};
 
   return (
     normalized?.conversation ||
@@ -183,7 +184,7 @@ async function processIncomingMessage(sock, message) {
     if (!text) {
       const normalized = normalizeMessageContent(message?.message) || message?.message || {};
       console.log(
-        `⚠️ لم أجد نصًا. contentType=${getContentType(normalized) || "unknown"} keys=${Object.keys(normalized).join(",") || "none"}`
+        `⚠️ لم أجد نصًا. contentType=${getContentType(normalized) || "unknown"} keys=${Object.keys(normalized).join(",") || "none"} payload=${JSON.stringify(normalized).slice(0, 500)}`
       );
       return;
     }
