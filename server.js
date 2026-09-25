@@ -10,8 +10,8 @@ import { NodeCache } from "@cacheable/node-cache";
 import pino from "pino";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "WhatsApp AI";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
@@ -42,8 +42,8 @@ if (!PHONE_NUMBER) {
   process.exit(1);
 }
 
-if (!OPENAI_API_KEY) {
-  console.error("ERROR: ضع OPENAI_API_KEY.");
+if (!GEMINI_API_KEY) {
+  console.error("ERROR: ضع GEMINI_API_KEY.");
   process.exit(1);
 }
 
@@ -102,29 +102,50 @@ function buildInput(jid, incomingText) {
 }
 
 async function askAI(jid, incomingText) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      instructions: SYSTEM_PROMPT,
-      input: buildInput(jid, incomingText),
-      max_output_tokens: 700,
-      store: false
-    })
-  });
+  const history = histories.get(jid) || [];
+  const contents = [
+    ...history.map((item) => ({
+      role: item.role === "assistant" ? "model" : "user",
+      parts: [{ text: item.content }]
+    })),
+    {
+      role: "user",
+      parts: [{ text: incomingText }]
+    }
+  ];
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: SYSTEM_PROMPT }]
+        },
+        contents,
+        generationConfig: {
+          maxOutputTokens: 700,
+          temperature: 0.7
+        }
+      })
+    }
+  );
 
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(`OpenAI ${response.status}: ${JSON.stringify(data)}`);
+    throw new Error(`Gemini ${response.status}: ${JSON.stringify(data)}`);
   }
 
-  const reply = data?.output_text?.trim();
-  if (!reply) throw new Error("OpenAI returned an empty reply.");
+  const reply = data?.candidates?.[0]?.content?.parts
+    ?.map((part) => part?.text || "")
+    .join("")
+    .trim();
+
+  if (!reply) throw new Error("Gemini returned an empty reply.");
   return reply;
 }
 
@@ -332,9 +353,9 @@ async function startWhatsApp() {
 }
 
 console.log("=================================");
-console.log(`${BOT_NAME} — OpenAI + WhatsApp`);
+console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
-console.log(`AI: ${OPENAI_MODEL}`);
+console.log(`AI: ${GEMINI_MODEL}`);
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
 console.log("=================================");
