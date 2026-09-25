@@ -444,6 +444,19 @@ async function startWhatsApp() {
 
     sock.ev.on("creds.update", saveCreds);
 
+    sock.ev.on("contacts.upsert", (contacts) => {
+      for (const contact of contacts || []) {
+        rememberContact(contact);
+      }
+      console.log(`👥 تم تحديث جهات الاتصال: ${contacts?.length || 0}`);
+    });
+
+    sock.ev.on("contacts.update", (contacts) => {
+      for (const contact of contacts || []) {
+        rememberContact(contact);
+      }
+    });
+
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
