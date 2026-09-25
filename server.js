@@ -22,13 +22,21 @@ const CONFIG_FILE = process.env.CONFIG_FILE || "./bot_config.json";
 const MAX_MEMORY_MESSAGES = 60;
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 const MANUAL_TAKEOVER_MS = 10 * 60 * 1000;
-const BATCH_WINDOW_MS = 1400;
+const BATCH_WINDOW_MS = 1800;
+const SMART_DELAY_MAX_MS = 6500;
+const OWNER_ALERT_JID = process.env.OWNER_ALERT_JID || "201555969921@s.whatsapp.net";
+const DND_START = process.env.DND_START || "";
+const DND_END = process.env.DND_END || "";
+const ESCALATION_ENABLED = process.env.ESCALATION_ENABLED !== "false";
 
 const DEFAULT_CONFIG = {
   enabled: true,
   replyDelayMinMs: 700,
   replyDelayMaxMs: 2200,
   manualTakeoverMinutes: 10,
+  dndStart: DND_START,
+  dndEnd: DND_END,
+  escalationEnabled: ESCALATION_ENABLED,
   ignoredJids: [],
   ignoredGroups: [],
   specialPeople: {},
@@ -89,6 +97,7 @@ const histories = new Map();
 const contactNames = new Map();
 const manualTakeover = new Map();
 const pendingBatches = new Map();
+const notifiedEscalations = new Map();
 
 function saveConfig() {
   try {
@@ -263,6 +272,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
     CONFIG.systemPrompt || "",
     getNameContext(jid, personName),
     getSpecialPersonPrompt(jid, personName),
+    "ذاكرة أسلوب الشخص:\n- استخدم الرسائل السابقة لتقدير درجة الرسمية والاختصار والهزار وطريقة الكتابة.\n- طابق أسلوب الشخص الحالي بدون نسخ عباراته أو اختلاق ذكريات ومعلومات.\n- لو أسلوبه تغيّر، اتبع أسلوبه الحالي.",
     `قواعد الوسائط:
 - صورة: افهم محتواها ورد على المطلوب منها.
 - فويس نوت أو صوت: افهم الكلام المسموع أولًا ورد على مضمونه.
@@ -270,7 +280,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - ملف نصي: اقرأ محتواه إذا كان مدعومًا.
 - فيديو: افهم محتواه قدر الإمكان.
 - لا تذكر تفاصيل تقنية عن Gemini أو API أو base64.
-- لو الوسيط غير قابل للقراءة، قل ذلك باختصار.`
+- لو الوسيط غير قابل للقراءة، قل ذلك باختصار.\n- لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.\n- لا تذكر للمُرسل تفاصيل تقنية عن الذكاء الاصطناعي أو API.`
   ].filter(Boolean).join("\n\n");
 
   const response = await fetch(
@@ -391,10 +401,48 @@ async function downloadMediaAsBase64(sock, message) {
   };
 }
 
-function randomDelay() {
+function isWithinDndHours() {
+  const start=String(CONFIG.dndStart||"").trim(), end=String(CONFIG.dndEnd||"").trim();
+  if(!start||!end)return false;
+  const a=start.split(":").map(Number),b=end.split(":").map(Number);
+  if(![...a,...b].every(Number.isFinite))return false;
+  const now=new Date(),n=now.getHours()*60+now.getMinutes(),s=a[0]*60+a[1],e=b[0]*60+b[1];
+  if(s===e)return true;
+  return s<e?n>=s&&n<e:n>=s||n<e;
+}
+function smartDelay(text,hasMedia=false){
+  const l=String(text||"").length;
+  let d=900+(l>80?Math.min(2200,Math.floor(l*8)):0)+(l>300?900:0)+(hasMedia?800:0)+Math.floor(Math.random()*900);
+  return Math.min(SMART_DELAY_MAX_MS,d);
+}
+function looksSensitive(text){
+  const v=String(text||"").toLowerCase();
+  return ["تحويل","فلوس","حساب بنكي","حساب بنكى","iban","bank","دفع","ادفع","قرض","شيك","اتفاق","عقد","موعد","قابلني","نتقابل","مقابلة","مشكلة كبيرة","خلاف","سر","مهم جدًا","مهم جدا","ضروري","مستعجل","اتصل بيا","كلمني","كلّمني","محتاجك","عايزك ضروري","قرار","موافقة"].some(x=>v.includes(x));
+}
+function escalationReason(text,mediaInfo=null){
+  if(looksSensitive(text))return "الرسالة فيها موضوع حساس أو محتاج قرار منك.";
+  if(mediaInfo?.label==="ملف"&&/pdf|doc|xls|xlsx/i.test(mediaInfo.fileName||""))return "وصل ملف ممكن يكون محتاج مراجعتك.";
+  return "";
+}
+async function notifyOwner(sock,sourceJid,reason,preview=""){
+  if(CONFIG.escalationEnabled===false)return;
+  const last=notifiedEscalations.get(sourceJid)||0;
+  if(Date.now()-last<15*60*1000)return;
+  notifiedEscalations.set(sourceJid,Date.now());
+  const source=normalizeJid(sourceJid).replace("@s.whatsapp.net","");
+  const p=String(preview||"").replace(/\s+/g," ").trim().slice(0,180);
+  const alert=p?"كلم "+source+" — الرسالة محتاجة تدخلك.\nالسبب: "+reason+"\nالرسالة: "+p:"كلم "+source+" — الرسالة محتاجة تدخلك.\nالسبب: "+reason;
+  try{
+    const sent=await sock.sendMessage(OWNER_ALERT_JID,{text:alert});
+    rememberSentMessage(sent);
+    console.log("🚨 تنبيه لصاحب الرقم: كلم "+source);
+  }catch(error){console.error("Owner alert error:",error);}
+}
+function randomDelay(text="",hasMedia=false) {
   const min = Math.max(0, Number(CONFIG.replyDelayMinMs ?? 700));
   const max = Math.max(min, Number(CONFIG.replyDelayMaxMs ?? 2200));
-  return Math.floor(min + Math.random() * (max - min + 1));
+  const base = Math.floor(min + Math.random() * (max - min + 1));
+  return Math.max(base, smartDelay(text, hasMedia));
 }
 
 function sleep(ms) {
@@ -487,18 +535,32 @@ async function handleOwnerCommand(sock, jid, text) {
     return true;
   }
 
-  if (command.name === "resume") {
+  if(command.name==="resume"){
     clearTakeover(jid);
-    await sock.sendMessage(jid, { text: "تمام، رجعت البوت يرد على المحادثة." });
+    await sock.sendMessage(jid,{text:"تمام، رجعت البوت يرد على المحادثة."});
     return true;
   }
-
+  if(command.name==="dnd"){
+    if(!command.args||command.args.toLowerCase()==="off"){CONFIG.dndStart="";CONFIG.dndEnd="";saveConfig();await sock.sendMessage(jid,{text:"تمام، وقت عدم الإزعاج اتقفل."});return true;}
+    const p=command.args.split(/\s+/);
+    if(p.length>=2&&/^\d{2}:\d{2}$/.test(p[0])&&/^\d{2}:\d{2}$/.test(p[1])){CONFIG.dndStart=p[0];CONFIG.dndEnd=p[1];saveConfig();await sock.sendMessage(jid,{text:"تمام، عدم الإزعاج من "+p[0]+" لـ "+p[1]+"."});}
+    else await sock.sendMessage(jid,{text:"اكتب: /dnd 23:00 07:00 أو /dnd off"});
+    return true;
+  }
+  if(command.name==="alert"){
+    CONFIG.escalationEnabled=command.args.toLowerCase()!=="off";saveConfig();
+    await sock.sendMessage(jid,{text:"تنبيهات التدخل: "+(CONFIG.escalationEnabled?"شغالة":"متوقفة")+"."});return true;
+  }
+  if(command.name==="takeover"){
+    const minutes=Math.max(1,Number(command.args)||CONFIG.manualTakeoverMinutes);setTakeover(jid,minutes);
+    await sock.sendMessage(jid,{text:"تمام، أنا هسكت هنا لمدة "+minutes+" دقيقة."});return true;
+  }
   return false;
 }
 
-async function sendReply(sock, jid, reply) {
-  const delay = randomDelay();
-  await showTyping(sock, jid, Math.min(delay, 2500));
+async function sendReply(sock, jid, reply, sourceText="", hasMedia=false) {
+  const delay=randomDelay(sourceText,hasMedia);
+  await showTyping(sock,jid,Math.min(delay,3500));
   const sent = await sock.sendMessage(jid, { text: reply });
   rememberSentMessage(sent);
   return sent;
@@ -539,10 +601,14 @@ async function processBatch(sock, messages) {
       if (!media) return;
     }
 
-    const reply = await askAI(jid, text, media, personName);
+    let reply=await askAI(jid,text,media,personName);
+    let needsHuman=false;
+    if(reply.includes("[NEEDS_HUMAN]")){needsHuman=true;reply=reply.replace(/\[NEEDS_HUMAN\]/g,"").trim();}
+    const reason=escalationReason(text,mediaInfo);
+    if(reason)needsHuman=true;
+    if(needsHuman){await notifyOwner(sock,jid,reason||"الموضوع محتاج تدخلك.",text);if(!reply)reply="تمام، هراجع الموضوع وأرد عليك.";}
     console.log(`📤 reply: ${reply}`);
-
-    const sent = await sendReply(sock, jid, reply);
+    const sent=await sendReply(sock,jid,reply,text,!!media);
     const historyText = media
       ? `[رسالة ${media.label}${media.fileName ? `: ${media.fileName}` : ""}]${text ? ` ${text}` : ""}`
       : text;
@@ -552,6 +618,7 @@ async function processBatch(sock, messages) {
     console.log(`✅ تم إرسال الرد إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
   } catch (error) {
     console.error("Message error:", error);
+    await notifyOwner(sock,jid,"حصل عطل أثناء معالجة الرسالة.","");
     try {
       await sock.sendMessage(jid, { text: "معلش، حصل عطل مؤقت. ابعت الرسالة تاني بعد لحظات." });
     } catch {}
@@ -588,8 +655,10 @@ async function processIncomingMessage(sock, message) {
 
     if (!jid || !id) return;
 
-    if (key?.fromMe) {
-      if (!isRecentBotMessage(message) && jid !== ownerJid) {
+    if(key?.fromMe){
+      const selfText=extractText(message).trim();
+      if(jid===ownerJid&&await handleOwnerCommand(sock,jid,selfText))return;
+      if(!isRecentBotMessage(message)&&jid!==ownerJid){
         setTakeover(jid);
         console.log(`✋ تدخل يدوي: البوت هيسكت مع ${jid} لمدة ${CONFIG.manualTakeoverMinutes} دقيقة.`);
       } else if (isRecentBotMessage(message)) {
@@ -604,16 +673,20 @@ async function processIncomingMessage(sock, message) {
     if (processedMessages.has(id)) return;
     rememberProcessed(id);
 
-    if (!botEnabled || CONFIG.enabled === false) return;
-    if (takeoverActive(jid)) {
+    if(!botEnabled||CONFIG.enabled===false)return;
+    const incomingText=extractText(message).trim();
+    const incomingMedia=getMediaInfo(message);
+    const localReason=escalationReason(incomingText,incomingMedia);
+    if(isWithinDndHours()){console.log("🌙 وقت عدم الإزعاج: "+jid);return;}
+    if(takeoverActive(jid)){
       console.log(`⏸️ المحادثة تحت سيطرة صاحب الرقم مؤقتًا: ${jid}`);
       return;
     }
 
-    const text = extractText(message).trim();
-    if (normalizeJid(jid) === normalizeJid(ownerJid) && await handleOwnerCommand(sock, jid, text)) return;
-
-    queueMessage(sock, message);
+    const text=incomingText;
+    if(normalizeJid(jid)===normalizeJid(ownerJid)&&await handleOwnerCommand(sock,jid,text))return;
+    if(localReason)await notifyOwner(sock,jid,localReason,text);
+    queueMessage(sock,message);
   } catch (error) {
     console.error("Incoming processing error:", error);
   }
@@ -686,7 +759,9 @@ async function startWhatsApp() {
         console.log("✅ WhatsApp متصل. البوت جاهز.");
         console.log("🌍 ترجمة وفهم الرسائل مفعّلان.");
         console.log("🗣️ الردود المصرية الطبيعية مفعّلة.");
-        console.log("🧠 الذاكرة + الأسماء + الوسائط + الأوامر + typing + تجميع الرسائل مفعّلة.");
+        console.log("🧠 الذاكرة + أسلوب كل شخص + الأسماء + الوسائط + الأوامر + typing + تجميع الرسائل مفعّلة.");
+        console.log("🌙 عدم الإزعاج: "+(CONFIG.dndStart||"OFF")+" → "+(CONFIG.dndEnd||"OFF"));
+        console.log("🚨 تنبيهات التدخل: "+(CONFIG.escalationEnabled===false?"OFF":"ON")+" → "+OWNER_ALERT_JID);
         console.log(`👑 Owner JID: ${ownerJid}`);
         pairingRequested = false;
         starting = false;
