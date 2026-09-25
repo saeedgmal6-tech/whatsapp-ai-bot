@@ -58,6 +58,7 @@ if (!GEMINI_API_KEY) {
 
 const logger = pino({ level: "silent" });
 const histories = new Map();
+const contactNames = new Map();
 // Contact names are handled from WhatsApp contact sync.
 
 function loadMemories() {
