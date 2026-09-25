@@ -1,32 +1,32 @@
-# WhatsApp AI Auto Reply
+# WhatsApp AI Bot
 
-This is a small Node.js/Express webhook that:
-1. Receives incoming WhatsApp Cloud API webhook events.
-2. Sends incoming text to the OpenAI Responses API.
-3. Sends the generated reply back through WhatsApp Cloud API.
+WhatsApp Business Cloud API -> Vercel -> OpenAI Responses API -> WhatsApp reply.
 
-## Render settings
+## Endpoints
+- GET /api/webhook: Meta webhook verification.
+- POST /api/webhook: incoming WhatsApp messages.
+- GET /api/health: health check.
 
-Runtime: Node
-Build Command: `npm install`
-Start Command: `npm start`
+## Environment variables
+- VERIFY_TOKEN
+- WHATSAPP_TOKEN
+- PHONE_NUMBER_ID
+- OPENAI_API_KEY
+- OPENAI_MODEL (optional; default: gpt-5.6-luna)
+- GRAPH_API_VERSION (optional; default: v23.0)
+- SYSTEM_PROMPT (optional)
 
-## Required environment variables
+Never commit tokens or API keys to GitHub.
 
-Do NOT put secrets in the code or GitHub.
+## Behavior
+- Replies to incoming text messages with OpenAI.
+- Keeps a short per-sender conversation context while the Vercel runtime instance is warm.
+- Avoids duplicate webhook deliveries during the same runtime instance.
+- Sends a fallback message if the AI call fails.
+- Non-text messages receive a text notice.
 
-- `VERIFY_TOKEN` — any private random string you choose; use the exact same value in Meta Webhooks.
-- `WHATSAPP_TOKEN` — Meta WhatsApp access token.
-- `PHONE_NUMBER_ID` — Meta WhatsApp phone number ID.
-- `OPENAI_API_KEY` — OpenAI API key.
-- `OPENAI_MODEL` — optional; default is `gpt-5.6-luna`.
-- `GRAPH_API_VERSION` — optional; use the Graph API version shown/required by your Meta app.
-- `SYSTEM_PROMPT` — optional; customize the bot's behavior.
+## Webhook URL
+https://YOUR-VERCEL-DOMAIN/api/webhook
 
-Webhook URL:
-`https://YOUR-RENDER-SERVICE.onrender.com/webhook`
-
-Health URL:
-`https://YOUR-RENDER-SERVICE.onrender.com/`
-
-Vercel deployment sync check.
+## WhatsApp window
+Free-form replies are intended for the active customer-service conversation window. Messages outside Meta's allowed window may require an approved WhatsApp message template.
