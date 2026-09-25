@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
-    "pino": "^9.9.0"
+    "pino": "^9.9.0",
+    "@cacheable/node-cache": "^3.1.1"
   }
 }
