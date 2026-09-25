@@ -173,43 +173,54 @@ async function startWhatsApp() {
       }
     });
 
+    const processIncomingMessage = async (message) => {
+      try {
+        console.log(`📨 message key: jid=${message?.key?.remoteJid || "unknown"} fromMe=${!!message?.key?.fromMe} stub=${message?.messageStubType || "none"} hasMessage=${!!message?.message}`);
+
+        if (!message?.message || message.key?.fromMe) return;
+
+        const jid = message.key?.remoteJid;
+        if (!jid) return;
+        if (IGNORE_GROUPS && isGroup(jid)) return;
+
+        const text = extractText(message).trim();
+        if (!text) {
+          console.log("⚠️ الرسالة وصلت لكن محتواها غير متاح بعد.");
+          return;
+        }
+
+        console.log(`📩 ${jid}: ${text}`);
+
+        const reply = await askAI(jid, text);
+        addHistory(jid, "user", text);
+        addHistory(jid, "assistant", reply);
+
+        await sock.sendMessage(jid, { text: reply });
+        console.log(`📤 ${jid}: ${reply}`);
+      } catch (error) {
+        console.error("Message error:", error);
+        try {
+          if (message?.key?.remoteJid) {
+            await sock.sendMessage(message.key.remoteJid, {
+              text: "معلش، حصل عطل مؤقت. ابعت الرسالة تاني بعد لحظات."
+            });
+          }
+        } catch {}
+      }
+    };
+
     sock.ev.on("messages.upsert", async ({ messages, type, requestId }) => {
       console.log(`📡 messages.upsert: type=${type || "unknown"} count=${messages?.length || 0}${requestId ? ` requestId=${requestId}` : ""}`);
-
       for (const message of messages || []) {
-        try {
-          console.log(`📨 message key: jid=${message?.key?.remoteJid || "unknown"} fromMe=${!!message?.key?.fromMe}`);
+        await processIncomingMessage(message);
+      }
+    });
 
-          if (!message?.message || message.key?.fromMe) continue;
-
-          const jid = message.key?.remoteJid;
-          if (!jid) continue;
-          if (IGNORE_GROUPS && isGroup(jid)) continue;
-
-          const text = extractText(message).trim();
-          if (!text) {
-            console.log("⚠️ الرسالة وصلت لكن لم أجد نصًا قابلًا للقراءة.");
-            continue;
-          }
-
-          console.log(`📩 ${jid}: ${text}`);
-
-          const reply = await askAI(jid, text);
-          addHistory(jid, "user", text);
-          addHistory(jid, "assistant", reply);
-
-          await sock.sendMessage(jid, { text: reply });
-          console.log(`📤 ${jid}: ${reply}`);
-        } catch (error) {
-          console.error("Message error:", error);
-          try {
-            if (message?.key?.remoteJid) {
-              await sock.sendMessage(message.key.remoteJid, {
-                text: "معلش، حصل عطل مؤقت. ابعت الرسالة تاني بعد لحظات."
-              });
-            }
-          } catch {}
-        }
+    sock.ev.on("messages.update", async (updates) => {
+      console.log(`🔄 messages.update: count=${updates?.length || 0}`);
+      for (const item of updates || []) {
+        const message = item?.update ? { key: item.key, ...item.update } : null;
+        if (message) await processIncomingMessage(message);
       }
     });
   } catch (error) {
