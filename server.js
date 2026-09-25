@@ -131,6 +131,17 @@ function rememberContact(contact) {
   else if (profileName && !contactNames.has(jid)) contactNames.set(jid, profileName);
 }
 
+function getContactName(message) {
+  const jid = message?.key?.remoteJid;
+  if (!jid) return "";
+  return (
+    contactNames.get(jid) ||
+    String(message?.pushName || "").trim() ||
+    String(message?.verifiedBizName || "").trim() ||
+    ""
+  );
+}
+
 function addHistory(jid, role, text) {
   const history = histories.get(jid) || [];
   history.push({ role, content: text });
