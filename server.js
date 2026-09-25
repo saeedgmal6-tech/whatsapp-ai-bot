@@ -4,10 +4,12 @@ import makeWASocket, {
   fetchLatestWaWebVersion,
   Browsers,
   normalizeMessageContent,
-  getContentType
+  getContentType,
+  downloadMediaMessage
 } from "@whiskeysockets/baileys";
 import { NodeCache } from "@cacheable/node-cache";
 import pino from "pino";
+import fs from "fs";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -15,6 +17,9 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "WhatsApp AI";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
+const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
+const MAX_MEMORY_MESSAGES = 40;
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
 `أنت المساعد الشخصي لصاحب رقم WhatsApp، وترد نيابةً عنه على الرسائل الواردة.
@@ -53,6 +58,34 @@ if (!GEMINI_API_KEY) {
 
 const logger = pino({ level: "silent" });
 const histories = new Map();
+
+function loadMemories() {
+  try {
+    if (!fs.existsSync(MEMORY_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
+    for (const [jid, value] of Object.entries(data || {})) {
+      if (!value || typeof value !== "object") continue;
+      histories.set(jid, Array.isArray(value.history) ? value.history.slice(-MAX_MEMORY_MESSAGES) : []);
+    }
+    console.log(`🧠 تم تحميل ذاكرة ${histories.size} محادثة.`);
+  } catch (error) {
+    console.error("Memory load error:", error);
+  }
+}
+
+function saveMemories() {
+  try {
+    const data = {};
+    for (const [jid, history] of histories.entries()) {
+      data[jid] = { history: history.slice(-MAX_MEMORY_MESSAGES) };
+    }
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf8");
+  } catch (error) {
+    console.error("Memory save error:", error);
+  }
+}
+
+loadMemories();
 const processedMessages = new Set();
 const sentMessages = new Map();
 
@@ -90,8 +123,9 @@ function rememberSentMessage(message) {
 function addHistory(jid, role, text) {
   const history = histories.get(jid) || [];
   history.push({ role, content: text });
-  while (history.length > 12) history.shift();
+  while (history.length > MAX_MEMORY_MESSAGES) history.shift();
   histories.set(jid, history);
+  saveMemories();
 }
 
 function buildInput(jid, incomingText) {
@@ -105,18 +139,37 @@ function buildInput(jid, incomingText) {
   ];
 }
 
-async function askAI(jid, incomingText) {
+async function askAI(jid, incomingText, media = null, personName = "") {
   const history = histories.get(jid) || [];
-  const contents = [
-    ...history.map((item) => ({
-      role: item.role === "assistant" ? "model" : "user",
-      parts: [{ text: item.content }]
-    })),
-    {
-      role: "user",
-      parts: [{ text: incomingText }]
-    }
-  ];
+  const contents = history.map((item) => ({
+    role: item.role === "assistant" ? "model" : "user",
+    parts: [{ text: item.content }]
+  }));
+
+  const userParts = [];
+  if (incomingText) {
+    userParts.push({
+      text: incomingText
+    });
+  }
+
+  if (media?.data && media?.mimeType) {
+    userParts.push({
+      inlineData: {
+        mimeType: media.mimeType,
+        data: media.data
+      }
+    });
+  }
+
+  contents.push({
+    role: "user",
+    parts: userParts.length ? userParts : [{ text: "وصلت رسالة بدون نص." }]
+  });
+
+  const nameContext = personName
+    ? `اسم الشخص الظاهر في WhatsApp: ${personName}. استخدم اسمه فقط عندما يكون طبيعيًا ومناسبًا، ولا تذكره في كل رد.`
+    : "اسم الشخص غير متاح؛ لا تخترع اسمًا.";
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
@@ -128,7 +181,20 @@ async function askAI(jid, incomingText) {
       },
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: SYSTEM_PROMPT }]
+          parts: [{
+            text: `${SYSTEM_PROMPT}
+
+${nameContext}
+
+قواعد التعامل مع الوسائط:
+- لو وصلت صورة: افهم محتواها ورد على المطلوب منها طبيعيًا.
+- لو وصل فويس نوت أو ملف صوتي: افهم الكلام المسموع أولًا ثم رد على مضمونه، ولا تقل إنك لا تستطيع سماعه.
+- لو وصل PDF: اقرأه وحلل المطلوب منه.
+- لو وصل ملف نصي: اقرأ محتواه ورد عليه.
+- لو وصل فيديو: افهم محتواه قدر الإمكان ورد على المطلوب.
+- لا تذكر للمستخدم تفاصيل تقنية عن Gemini أو API أو base64 أو معالجة الملف.
+- لو الملف غير قابل للقراءة، قل ذلك باختصار واطلب منه إرساله بصيغة مناسبة.`
+          }]
         },
         contents,
         generationConfig: {
@@ -184,6 +250,57 @@ function extractText(message) {
   );
 }
 
+function getMediaInfo(message) {
+  const normalized = normalizeMessageContent(message?.message) || unwrapMessage(message?.message) || {};
+  const type = getContentType(normalized);
+
+  if (type === "imageMessage") {
+    return { node: normalized.imageMessage, mimeType: normalized.imageMessage?.mimetype || "image/jpeg", label: "صورة" };
+  }
+  if (type === "audioMessage") {
+    return { node: normalized.audioMessage, mimeType: normalized.audioMessage?.mimetype || "audio/ogg", label: "فويس نوت" };
+  }
+  if (type === "videoMessage") {
+    return { node: normalized.videoMessage, mimeType: normalized.videoMessage?.mimetype || "video/mp4", label: "فيديو" };
+  }
+  if (type === "documentMessage") {
+    return { node: normalized.documentMessage, mimeType: normalized.documentMessage?.mimetype || "application/octet-stream", label: "ملف", fileName: normalized.documentMessage?.fileName || "" };
+  }
+  return null;
+}
+
+async function downloadMediaAsBase64(sock, message) {
+  const info = getMediaInfo(message);
+  if (!info?.node) return null;
+
+  const size = Number(info.node.fileLength || 0);
+  if (size && size > MAX_MEDIA_BYTES) {
+    throw new Error(`Media too large: ${size} bytes`);
+  }
+
+  const buffer = await downloadMediaMessage(
+    message,
+    "buffer",
+    {},
+    {
+      logger,
+      reuploadRequest: sock.updateMediaMessage
+    }
+  );
+
+  if (!buffer || !buffer.length) return null;
+  if (buffer.length > MAX_MEDIA_BYTES) {
+    throw new Error(`Media too large: ${buffer.length} bytes`);
+  }
+
+  return {
+    data: buffer.toString("base64"),
+    mimeType: info.mimeType,
+    label: info.label,
+    fileName: info.fileName || ""
+  };
+}
+
 async function processIncomingMessage(sock, message) {
   try {
     const key = message?.key;
@@ -206,24 +323,44 @@ async function processIncomingMessage(sock, message) {
     rememberProcessed(id);
 
     const text = extractText(message).trim();
+    const personName = message?.pushName || message?.verifiedBizName || "";
+    const mediaInfo = getMediaInfo(message);
 
-    if (!text) {
+    if (!text && !mediaInfo) {
       const normalized = normalizeMessageContent(message?.message) || message?.message || {};
       console.log(
-        `⚠️ لم أجد نصًا. contentType=${getContentType(normalized) || "unknown"} keys=${Object.keys(normalized).join(",") || "none"} payload=${JSON.stringify(normalized).slice(0, 500)}`
+        `⚠️ لم أجد نصًا أو وسائط. contentType=${getContentType(normalized) || "unknown"} keys=${Object.keys(normalized).join(",") || "none"} payload=${JSON.stringify(normalized).slice(0, 500)}`
       );
       return;
     }
 
-    console.log(`📩 incoming: ${text}`);
+    if (personName) {
+      console.log(`👤 الشخص: ${personName}`);
+    }
 
-    const reply = await askAI(jid, text);
+    if (text) {
+      console.log(`📩 incoming: ${text}`);
+    } else if (mediaInfo) {
+      console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
+    }
 
-    addHistory(jid, "user", text);
+    let media = null;
+    if (mediaInfo) {
+      media = await downloadMediaAsBase64(sock, message);
+      if (!media) {
+        console.log("⚠️ تعذر تحميل الوسائط.");
+        return;
+      }
+    }
+
+    const reply = await askAI(jid, text, media, personName);
+
+    const historyText = media
+      ? `[رسالة ${media.label}${media.fileName ? `: ${media.fileName}` : ""}]${text ? ` ${text}` : ""}`
+      : text;
+
+    addHistory(jid, "user", historyText);
     addHistory(jid, "assistant", reply);
-
-    const sent = await sock.sendMessage(jid, { text: reply });
-    rememberSentMessage(sent);
 
     console.log(`📤 reply: ${reply}`);
   } catch (error) {
@@ -306,6 +443,7 @@ async function startWhatsApp() {
         console.log("✅ WhatsApp متصل. البوت جاهز.");
         console.log("🌍 ترجمة وفهم الرسائل مفعّلان.");
         console.log("🗣️ الردود ستكون بالعربية المصرية وبأسلوب محادثة طبيعي.");
+        console.log("🧠 الذاكرة الدائمة + أسماء الأشخاص + الصور والملفات والفويس مفعّلة.");
         pairingRequested = false;
       }
 
