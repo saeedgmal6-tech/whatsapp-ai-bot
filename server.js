@@ -46,10 +46,7 @@ function addHistory(jid, role, text) {
 
 function buildInput(jid, incomingText) {
   const history = histories.get(jid) || [];
-  return [
-    ...history,
-    { role: "user", content: incomingText }
-  ];
+  return [...history, { role: "user", content: incomingText }];
 }
 
 async function askAI(jid, incomingText) {
@@ -83,6 +80,29 @@ function isGroup(jid) {
   return jid.endsWith("@g.us");
 }
 
+function unwrapMessage(message) {
+  let current = message;
+  for (let i = 0; i < 5 && current; i++) {
+    if (current.ephemeralMessage?.message) current = current.ephemeralMessage.message;
+    else if (current.viewOnceMessage?.message) current = current.viewOnceMessage.message;
+    else if (current.viewOnceMessageV2?.message) current = current.viewOnceMessageV2.message;
+    else break;
+  }
+  return current;
+}
+
+function extractText(message) {
+  const m = unwrapMessage(message);
+  return (
+    m?.conversation ||
+    m?.extendedTextMessage?.text ||
+    m?.imageMessage?.caption ||
+    m?.videoMessage?.caption ||
+    m?.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+    ""
+  );
+}
+
 async function startWhatsApp() {
   if (starting) return;
   starting = true;
@@ -114,9 +134,7 @@ async function startWhatsApp() {
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      if (connection === "connecting") {
-        console.log("جاري الاتصال بواتساب...");
-      }
+      if (connection === "connecting") console.log("جاري الاتصال بواتساب...");
 
       if (!state.creds.registered && qr && !pairingRequested) {
         pairingRequested = true;
@@ -142,7 +160,6 @@ async function startWhatsApp() {
       if (connection === "close") {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
-
         console.log("اتصال WhatsApp اتقفل:", statusCode || "unknown");
         starting = false;
 
@@ -156,26 +173,25 @@ async function startWhatsApp() {
       }
     });
 
-    sock.ev.on("messages.upsert", async ({ messages, type }) => {
-      if (type !== "notify") return;
+    sock.ev.on("messages.upsert", async ({ messages, type, requestId }) => {
+      console.log(`📡 messages.upsert: type=${type || "unknown"} count=${messages?.length || 0}${requestId ? ` requestId=${requestId}` : ""}`);
 
-      for (const message of messages) {
+      for (const message of messages || []) {
         try {
+          console.log(`📨 message key: jid=${message?.key?.remoteJid || "unknown"} fromMe=${!!message?.key?.fromMe}`);
+
           if (!message?.message || message.key?.fromMe) continue;
 
           const jid = message.key?.remoteJid;
           if (!jid) continue;
           if (IGNORE_GROUPS && isGroup(jid)) continue;
 
-          const incomingText =
-            message.message.conversation ||
-            message.message.extendedTextMessage?.text ||
-            message.message.imageMessage?.caption ||
-            message.message.videoMessage?.caption;
+          const text = extractText(message).trim();
+          if (!text) {
+            console.log("⚠️ الرسالة وصلت لكن لم أجد نصًا قابلًا للقراءة.");
+            continue;
+          }
 
-          if (!incomingText?.trim()) continue;
-
-          const text = incomingText.trim();
           console.log(`📩 ${jid}: ${text}`);
 
           const reply = await askAI(jid, text);
@@ -187,9 +203,11 @@ async function startWhatsApp() {
         } catch (error) {
           console.error("Message error:", error);
           try {
-            await sock.sendMessage(message.key.remoteJid, {
-              text: "معلش، حصل عطل مؤقت. ابعت الرسالة تاني بعد لحظات."
-            });
+            if (message?.key?.remoteJid) {
+              await sock.sendMessage(message.key.remoteJid, {
+                text: "معلش، حصل عطل مؤقت. ابعت الرسالة تاني بعد لحظات."
+              });
+            }
           } catch {}
         }
       }
