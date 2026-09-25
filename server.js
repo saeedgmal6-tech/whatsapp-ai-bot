@@ -7,8 +7,8 @@ import makeWASocket, {
 import pino from "pino";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const BOT_NAME = process.env.BOT_NAME || "WhatsApp AI";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
@@ -27,8 +27,8 @@ if (!PHONE_NUMBER) {
   process.exit(1);
 }
 
-if (!OPENROUTER_API_KEY) {
-  console.error("ERROR: ضع OPENROUTER_API_KEY.");
+if (!OPENAI_API_KEY) {
+  console.error("ERROR: ضع OPENAI_API_KEY.");
   process.exit(1);
 }
 
@@ -44,40 +44,38 @@ function addHistory(jid, role, text) {
   histories.set(jid, history);
 }
 
-function buildMessages(jid, incomingText) {
+function buildInput(jid, incomingText) {
   const history = histories.get(jid) || [];
   return [
-    { role: "system", content: SYSTEM_PROMPT },
     ...history,
     { role: "user", content: incomingText }
   ];
 }
 
 async function askAI(jid, incomingText) {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://github.com/saeedgmal6-tech/whatsapp-ai-bot",
-      "X-Title": BOT_NAME
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages: buildMessages(jid, incomingText),
-      max_tokens: 500,
-      temperature: 0.7
+      model: OPENAI_MODEL,
+      instructions: SYSTEM_PROMPT,
+      input: buildInput(jid, incomingText),
+      max_output_tokens: 500,
+      store: false
     })
   });
 
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(`OpenRouter ${response.status}: ${JSON.stringify(data)}`);
+    throw new Error(`OpenAI ${response.status}: ${JSON.stringify(data)}`);
   }
 
-  const reply = data?.choices?.[0]?.message?.content?.trim();
-  if (!reply) throw new Error("OpenRouter returned an empty reply.");
+  const reply = data?.output_text?.trim();
+  if (!reply) throw new Error("OpenAI returned an empty reply.");
   return reply;
 }
 
@@ -105,8 +103,6 @@ async function startWhatsApp() {
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 60000,
-      // Do not request/decrypt old WhatsApp history during startup.
-      // This avoids stale Signal sessions causing repeated Bad MAC errors.
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false
     });
@@ -203,9 +199,9 @@ async function startWhatsApp() {
 }
 
 console.log("=================================");
-console.log(`${BOT_NAME} — مجاني بدون Meta Cloud API`);
+console.log(`${BOT_NAME} — OpenAI + WhatsApp`);
 console.log("WhatsApp: Baileys");
-console.log(`AI: ${OPENROUTER_MODEL}`);
+console.log(`AI: ${OPENAI_MODEL}`);
 console.log("=================================");
 
 startWhatsApp().catch((error) => {
