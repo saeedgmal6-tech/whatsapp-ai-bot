@@ -355,6 +355,14 @@ async function processIncomingMessage(sock, message) {
 
     const reply = await askAI(jid, text, media, personName);
 
+    console.log(`📤 reply: ${reply}`);
+
+    // إرسال الرد فعليًا إلى نفس محادثة WhatsApp.
+    const sent = await sock.sendMessage(jid, { text: reply });
+
+    // حفظ الرسالة المرسلة حتى يستطيع Baileys استخدامها عند طلب إعادة المحاولة.
+    rememberSentMessage(sent);
+
     const historyText = media
       ? `[رسالة ${media.label}${media.fileName ? `: ${media.fileName}` : ""}]${text ? ` ${text}` : ""}`
       : text;
@@ -362,7 +370,7 @@ async function processIncomingMessage(sock, message) {
     addHistory(jid, "user", historyText);
     addHistory(jid, "assistant", reply);
 
-    console.log(`📤 reply: ${reply}`);
+    console.log(`✅ تم إرسال الرد إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
   } catch (error) {
     console.error("Message error:", error);
     try {
