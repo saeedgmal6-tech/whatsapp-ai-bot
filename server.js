@@ -2,7 +2,9 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestWaWebVersion,
-  Browsers
+  Browsers,
+  normalizeMessageContent,
+  getContentType
 } from "@whiskeysockets/baileys";
 import { NodeCache } from "@cacheable/node-cache";
 import pino from "pino";
@@ -143,14 +145,14 @@ function unwrapMessage(message) {
 }
 
 function extractText(message) {
-  const m = unwrapMessage(message);
+  const normalized = normalizeMessageContent(message) || unwrapMessage(message) || {};
 
   return (
-    m?.conversation ||
-    m?.extendedTextMessage?.text ||
-    m?.imageMessage?.caption ||
-    m?.videoMessage?.caption ||
-    m?.documentMessage?.caption ||
+    normalized?.conversation ||
+    normalized?.extendedTextMessage?.text ||
+    normalized?.imageMessage?.caption ||
+    normalized?.videoMessage?.caption ||
+    normalized?.documentMessage?.caption ||
     ""
   );
 }
@@ -179,7 +181,10 @@ async function processIncomingMessage(sock, message) {
     const text = extractText(message).trim();
 
     if (!text) {
-      console.log("⚠️ نوع الرسالة غير النصية أو بدون نص/تعليق. تم تجاهلها.");
+      const normalized = normalizeMessageContent(message?.message) || message?.message || {};
+      console.log(
+        `⚠️ لم أجد نصًا. contentType=${getContentType(normalized) || "unknown"} keys=${Object.keys(normalized).join(",") || "none"}`
+      );
       return;
     }
 
