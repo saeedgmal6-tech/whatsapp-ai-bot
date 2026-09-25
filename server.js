@@ -677,14 +677,15 @@ async function processIncomingMessage(sock, message) {
     const incomingText=extractText(message).trim();
     const incomingMedia=getMediaInfo(message);
     const localReason=escalationReason(incomingText,incomingMedia);
+    const text=incomingText;
+
+    if(normalizeJid(jid)===normalizeJid(ownerJid)&&await handleOwnerCommand(sock,jid,text))return;
     if(isWithinDndHours()){console.log("🌙 وقت عدم الإزعاج: "+jid);return;}
     if(takeoverActive(jid)){
       console.log(`⏸️ المحادثة تحت سيطرة صاحب الرقم مؤقتًا: ${jid}`);
       return;
     }
 
-    const text=incomingText;
-    if(normalizeJid(jid)===normalizeJid(ownerJid)&&await handleOwnerCommand(sock,jid,text))return;
     if(localReason)await notifyOwner(sock,jid,localReason,text);
     queueMessage(sock,message);
   } catch (error) {
