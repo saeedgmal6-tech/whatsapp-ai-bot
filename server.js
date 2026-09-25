@@ -119,14 +119,13 @@ async function startWhatsApp() {
       auth: state,
       logger,
       printQRInTerminal: false,
-      browser: Browsers.macOS("Chrome"),
+      browser: Browsers.ubuntu("Chrome"),
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 60000,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
-      maxMsgRetryCount: 1,
-      enableAutoSessionRecreation: false
+      maxMsgRetryCount: 5,
     });
 
     sock.ev.on("creds.update", saveCreds);
