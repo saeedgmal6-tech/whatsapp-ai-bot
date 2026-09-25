@@ -104,7 +104,11 @@ async function startWhatsApp() {
       browser: Browsers.macOS("Chrome"),
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
-      connectTimeoutMs: 60000
+      connectTimeoutMs: 60000,
+      // Do not request/decrypt old WhatsApp history during startup.
+      // This avoids stale Signal sessions causing repeated Bad MAC errors.
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: () => false
     });
 
     sock.ev.on("creds.update", saveCreds);
