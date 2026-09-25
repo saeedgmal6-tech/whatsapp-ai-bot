@@ -132,6 +132,7 @@ loadMemories();
 
 const processedMessages = new Set();
 const sentMessages = new Map();
+const recentBotSends = new Map();
 const msgRetryCounterCache = new NodeCache({ stdTTL: 60 * 60, useClones: false });
 const placeholderResendCache = new NodeCache({ stdTTL: 60 * 60, useClones: false });
 
@@ -150,12 +151,39 @@ function rememberProcessed(id) {
 
 function rememberSentMessage(message) {
   const id = message?.key?.id;
+  const jid = message?.key?.remoteJid;
   if (!id) return;
   sentMessages.set(id, message.message);
+  if (jid) {
+    recentBotSends.set(jid, {
+      id,
+      text: extractText(message).trim(),
+      at: Date.now()
+    });
+  }
   if (sentMessages.size > 2000) {
     const first = sentMessages.keys().next().value;
     if (first) sentMessages.delete(first);
   }
+}
+
+function isRecentBotMessage(message) {
+  const jid = message?.key?.remoteJid;
+  const id = message?.key?.id;
+  if (!jid) return false;
+
+  if (id && sentMessages.has(id)) return true;
+
+  const recent = recentBotSends.get(jid);
+  if (!recent) return false;
+
+  if (Date.now() - recent.at > 30000) {
+    recentBotSends.delete(jid);
+    return false;
+  }
+
+  const text = extractText(message).trim();
+  return !text || !recent.text || text === recent.text;
 }
 
 function normalizeJid(jid) {
@@ -561,9 +589,11 @@ async function processIncomingMessage(sock, message) {
     if (!jid || !id) return;
 
     if (key?.fromMe) {
-      if (!sentMessages.has(id) && jid !== ownerJid) {
+      if (!isRecentBotMessage(message) && jid !== ownerJid) {
         setTakeover(jid);
         console.log(`✋ تدخل يدوي: البوت هيسكت مع ${jid} لمدة ${CONFIG.manualTakeoverMinutes} دقيقة.`);
+      } else if (isRecentBotMessage(message)) {
+        console.log(`🤖 رسالة صادرة من البوت، بدون تدخل يدوي: ${jid}`);
       }
       return;
     }
