@@ -190,8 +190,8 @@ async function askAI(jid, incomingText, media = null, personName = "") {
   });
 
   const nameContext = personName
-    ? `اسم الشخص الظاهر في WhatsApp: ${personName}. استخدم اسمه فقط عندما يكون طبيعيًا ومناسبًا، ولا تذكره في كل رد.`
-    : "اسم الشخص غير متاح؛ لا تخترع اسمًا.";
+    ? `اسم الشخص كما هو محفوظ في جهات اتصال صاحب الرقم: "${personName}". استخدم هذا الاسم عندما يكون طبيعيًا ومناسبًا، ولا تفترض اسمًا مختلفًا.`
+    : "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا.";
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
