@@ -11,7 +11,7 @@ import pino from "pino";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "WhatsApp AI";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
@@ -115,11 +115,12 @@ async function askAI(jid, incomingText) {
   ];
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
       },
       body: JSON.stringify({
         systemInstruction: {
