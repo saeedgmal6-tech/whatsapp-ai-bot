@@ -101,7 +101,7 @@ async function startWhatsApp() {
       auth: state,
       logger,
       printQRInTerminal: false,
-      browser: Browsers.macOS("Desktop"),
+      browser: Browsers.macOS("Chrome"),
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 60000
