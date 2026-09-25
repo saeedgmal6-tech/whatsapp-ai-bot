@@ -1,32 +1,82 @@
-# WhatsApp AI Bot
+# WhatsApp AI Bot — بدون Meta
 
-WhatsApp Business Cloud API -> Vercel -> OpenAI Responses API -> WhatsApp reply.
+بوت WhatsApp يعمل مباشرة كجهاز WhatsApp Web إضافي باستخدام Baileys، ثم يرسل الرسائل إلى OpenRouter ويعيد رد الذكاء الاصطناعي إلى نفس المحادثة.
 
-## Endpoints
-- GET /api/webhook: Meta webhook verification.
-- POST /api/webhook: incoming WhatsApp messages.
-- GET /api/health: health check.
+## المكونات
 
-## Environment variables
-- VERIFY_TOKEN
-- WHATSAPP_TOKEN
-- PHONE_NUMBER_ID
-- OPENAI_API_KEY
-- OPENAI_MODEL (optional; default: gpt-5.6-luna)
-- GRAPH_API_VERSION (optional; default: v23.0)
-- SYSTEM_PROMPT (optional)
+WhatsApp على الهاتف → Baileys → OpenRouter (موديلات مجانية) → WhatsApp
 
-Never commit tokens or API keys to GitHub.
+لا يحتاج:
+- Meta Business
+- WhatsApp Cloud API
+- WABA
+- Webhooks
+- App Review
 
-## Behavior
-- Replies to incoming text messages with OpenAI.
-- Keeps a short per-sender conversation context while the Vercel runtime instance is warm.
-- Avoids duplicate webhook deliveries during the same runtime instance.
-- Sends a fallback message if the AI call fails.
-- Non-text messages receive a text notice.
+## الذكاء الاصطناعي المجاني
 
-## Webhook URL
-https://YOUR-VERCEL-DOMAIN/api/webhook
+الإعداد الافتراضي هو:
+`OPENROUTER_MODEL=openrouter/free`
 
-## WhatsApp window
-Free-form replies are intended for the active customer-service conversation window. Messages outside Meta's allowed window may require an approved WhatsApp message template.
+OpenRouter يوفر مسار Free Models Router لاختيار موديل مجاني تلقائيًا. الحد المجاني الحالي محدود، لذلك هذا مناسب للاستخدام الشخصي الخفيف وليس للتشغيل الكثيف.
+
+## التثبيت على Termux
+
+بعد تثبيت Termux:
+
+```bash
+pkg update -y
+pkg install nodejs git -y
+git clone https://github.com/saeedgmal6-tech/whatsapp-ai-bot.git
+cd whatsapp-ai-bot
+npm install
+```
+
+## المتغيرات
+
+```bash
+export PHONE_NUMBER=رقم_واتساب_بدون_علامة_+
+export OPENROUTER_API_KEY=مفتاحك
+export OPENROUTER_MODEL=openrouter/free
+```
+
+ثم:
+
+```bash
+npm start
+```
+
+سيظهر **Pairing Code** في الشاشة، وليس QR.
+
+في WhatsApp:
+الأجهزة المرتبطة → ربط جهاز → الربط برقم الهاتف
+
+أدخل الكود الظاهر في Termux.
+
+بعد نجاح الربط ستظهر:
+`✅ WhatsApp متصل. البوت جاهز.`
+
+## الجلسة
+
+بيانات تسجيل الدخول تحفظ محليًا في:
+`./auth_info`
+
+بعد أول ربط لا تحتاج إلى إعادة إدخال الكود عند كل تشغيل طالما مجلد الجلسة موجود.
+
+## السلوك
+
+- يرد على الرسائل النصية.
+- يحافظ على سياق قصير لكل محادثة.
+- يتجاهل رسائل البوت نفسه.
+- يتجاهل المجموعات افتراضيًا.
+- لا يبدأ محادثات من نفسه.
+- يدعم الصور/الفيديو مع caption كنص، لكن لا يحلل محتوى الصورة أو الفيديو.
+- إعادة الاتصال تلقائية عند انقطاع الاتصال.
+
+## ملاحظة مهمة
+
+Baileys طريقة غير رسمية للتعامل مع WhatsApp Web وليست WhatsApp Cloud API. استخدامها قد تخضع لقيود أو تغييرات من WhatsApp، لذلك لا يوجد ضمان بأن الرقم لن يتعرض لتقييد.
+
+## Termux
+
+يفضل تثبيت Termux من مصدر رسمي مثل F-Droid أو GitHub Releases، وعدم خلط نسخة Termux أو الإضافات من مصادر مختلفة.
