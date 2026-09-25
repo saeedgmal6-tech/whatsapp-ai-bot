@@ -104,7 +104,9 @@ async function startWhatsApp() {
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 60000,
       syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false
+      shouldSyncHistoryMessage: () => false,
+      maxMsgRetryCount: 1,
+      enableAutoSessionRecreation: false
     });
 
     sock.ev.on("creds.update", saveCreds);
