@@ -315,6 +315,12 @@ function getNameContext(jid, personName) {
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
 }
 
+function isExcelRequest(text) {
+  const v = String(text || "").toLowerCase();
+  return /(شيت|جدول|ملف|اكسيل|إكسيل|excel|xlsx|spreadsheet)/i.test(v)
+    && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
+}
+
 async function generateSpreadsheetSpec(request) {
   const prompt = `حوّل طلب المستخدم التالي إلى مواصفات ملف Excel عملية.
 المطلوب JSON فقط بالشكل:
