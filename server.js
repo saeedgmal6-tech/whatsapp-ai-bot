@@ -251,7 +251,7 @@ function getNameContext(jid, personName) {
 
 function isImageRequest(text) {
   const v = String(text || "").toLowerCase().trim();
-  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صورة|صورلي|صوّرلي|generate|create|draw)\\s*(?:لي|لى|لنا|ليّا)?\\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v)
+  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|generate|create|draw)\s*/(?:لي|لى|لنا|ليّا)?\\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v)
     || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw).*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v);
 }
 
