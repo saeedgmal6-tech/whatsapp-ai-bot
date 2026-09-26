@@ -708,6 +708,40 @@ async function processBatch(sock, messages) {
     if (text) console.log(`📩 incoming: ${text}`);
     if (mediaInfo) console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
 
+    if (isImageRequest(text)) {
+      console.log("🎨 طلب إنشاء صورة.");
+      const image = await generateImage(text);
+      await showTyping(sock, jid, 1200);
+      const sent = await sock.sendMessage(jid, {
+        image: image.buffer,
+        mimetype: image.mimeType,
+        caption: "اتفضل 👌"
+      });
+      rememberSentMessage(sent);
+      addHistory(jid, "user", text);
+      addHistory(jid, "assistant", "[تم إنشاء صورة وإرسالها]");
+      console.log(`🖼️ تم إرسال صورة إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
+      return;
+    }
+
+    if (isExcelRequest(text)) {
+      console.log("📊 طلب إنشاء Excel.");
+      const spec = await generateSpreadsheetSpec(text);
+      const buffer = await buildExcelBuffer(spec);
+      await showTyping(sock, jid, 1200);
+      const sent = await sock.sendMessage(jid, {
+        document: buffer,
+        mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        fileName: spec.fileName,
+        caption: "اتفضل، جهزتلك الشيت 👌"
+      });
+      rememberSentMessage(sent);
+      addHistory(jid, "user", text);
+      addHistory(jid, "assistant", `[تم إنشاء ملف Excel: ${spec.fileName}]`);
+      console.log(`📊 تم إرسال Excel إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
+      return;
+    }
+
     let media = null;
     if (mediaMessage) {
       media = await downloadMediaAsBase64(sock, mediaMessage);
