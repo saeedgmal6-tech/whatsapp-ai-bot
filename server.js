@@ -15,7 +15,7 @@ const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const PIXAZO_API_KEY = process.env.PIXAZO_API_KEY || "";
+const POLLINATIONS_API_KEY = process.env.POLLINATIONS_API_KEY || "";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -205,13 +205,71 @@ function normalizeJid(jid) {
 }
 
 function rememberContact(contact) {
-  const jid = contact?.id;
-  if (!jid) return;
-  const savedName = String(contact?.name || "").trim();
+  const ids = [
+    contact?.id,
+    contact?.lid,
+    contact?.phoneNumber,
+    contact?.jid
+  ].filter(Boolean).map(String);
+
+  if (!ids.length) return;
+
+  const savedName = String(contact?.name || contact?.displayName || "").trim();
   const profileName = String(contact?.notify || "").trim();
-  if (savedName) contactNames.set(jid, savedName);
-  else if (profileName && !contactNames.has(jid)) contactNames.set(jid, profileName);
+  const name = savedName || profileName;
+  if (!name) return;
+
+  for (const id of ids) {
+    contactNames.set(id, name);
+    contactNames.set(normalizeJid(id), name);
+  }
   saveMemories();
+}
+
+async function rememberMessageContact(sock, message) {
+  const key = message?.key || {};
+  const ids = [
+    key.remoteJid,
+    key.remoteJidAlt,
+    key.senderPn,
+    key.participantPn,
+    key.participantAlt
+  ].filter(Boolean).map(String);
+
+  let name = "";
+  for (const id of ids) {
+    name =
+      contactNames.get(id) ||
+      contactNames.get(normalizeJid(id)) ||
+      "";
+    if (name) break;
+  }
+
+  if (!name && String(key.remoteJid || "").endsWith("@lid")) {
+    try {
+      const pn = await sock.signalRepository?.lidMapping?.getPNForLID(key.remoteJid);
+      if (pn) {
+        name =
+          contactNames.get(pn) ||
+          contactNames.get(normalizeJid(pn)) ||
+          "";
+        if (name) {
+          contactNames.set(key.remoteJid, name);
+          contactNames.set(normalizeJid(key.remoteJid), name);
+        }
+      }
+    } catch {}
+  }
+
+  if (name) {
+    for (const id of ids) {
+      contactNames.set(id, name);
+      contactNames.set(normalizeJid(id), name);
+    }
+    saveMemories();
+  }
+
+  return name;
 }
 
 function getContactName(message) {
@@ -250,9 +308,22 @@ function getNameContext(jid, personName) {
 }
 
 function isImageRequest(text) {
-  const v = String(text || "").toLowerCase().trim();
-  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|generate|create|draw)\s*(?:لي|لى|لنا|ليّا)?\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v)
-    || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw).*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v);
+  const v = String(text || "").trim();
+  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صمملّي|generate|create|draw)\\s*(?:لي|لى|لنا|ليّا)?\\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\\b/i.test(v)
+    || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw)\\b.*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\\b/i.test(v);
+}
+
+function extractImagePrompt(text) {
+  let prompt = String(text || "").trim();
+
+  prompt = prompt
+    .replace(/^(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صمملّي)\\s*/i, "")
+    .replace(/^(?:لي|لى|لنا|ليّا)\\s*/i, "")
+    .replace(/^(?:صورة|رسمة|تصميم)\\s*/i, "")
+    .trim();
+
+  if (!prompt) prompt = String(text || "").trim();
+  return prompt;
 }
 
 function isExcelRequest(text) {
@@ -261,53 +332,74 @@ function isExcelRequest(text) {
     && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
 }
 
-async function generateImage(prompt) {
-  if (!PIXAZO_API_KEY) throw new Error("PIXAZO_API_KEY is missing.");
+async function translateImagePrompt(prompt) {
+  const original = String(prompt || "").trim();
+  if (!original) return original;
 
-  const response = await fetch("https://gateway.pixazo.ai/flux/text-to-image", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Ocp-Apim-Subscription-Key": PIXAZO_API_KEY
-    },
-    body: JSON.stringify({ prompt: String(prompt || "").trim() })
-  });
-
-  const data = await response.json();
-  if (!response.ok) throw new Error(`Pixazo image ${response.status}: ${JSON.stringify(data)}`);
-
-  let imageUrl = data?.output?.media_url || data?.output?.url || data?.media_url || data?.image_url || data?.url;
-  const requestId = data?.request_id || data?.requestId || data?.id;
-
-  if (!imageUrl && requestId) {
-    for (let attempt = 0; attempt < 12; attempt++) {
-      await sleep(1500);
-      const statusResponse = await fetch("https://gateway.pixazo.ai/flux-1-schnell/v1/checkStatus", {
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Ocp-Apim-Subscription-Key": PIXAZO_API_KEY
+          "x-goog-api-key": GEMINI_API_KEY
         },
-        body: JSON.stringify({ requestId })
-      });
-      const statusData = await statusResponse.json();
-      if (!statusResponse.ok) throw new Error(`Pixazo image status ${statusResponse.status}: ${JSON.stringify(statusData)}`);
-      const status = String(statusData?.status || "").toLowerCase();
-      imageUrl = statusData?.output?.media_url || statusData?.output || statusData?.media_url || statusData?.url;
-      if (typeof imageUrl === "string" && imageUrl) break;
-      if (status === "failed" || status === "error") throw new Error(`Pixazo image generation failed: ${JSON.stringify(statusData)}`);
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{
+              text: `You convert an image request into one precise English image-generation prompt.
+Preserve EVERY requested subject, number, color, clothing item, pose, action, location, object, and relationship exactly.
+Do not add, remove, replace, or invent anything.
+Do not interpret the request beyond what is explicitly stated.
+If the request contains text that must appear in the image, preserve that text exactly.
+Return ONLY the final image prompt in English.`
+            }]
+          },
+          contents: [{ role: "user", parts: [{ text: original }] }],
+          generationConfig: {
+            maxOutputTokens: 500,
+            temperature: 0
+          }
+        })
+      }
+    );
+
+    if (!response.ok) return original;
+    const data = await response.json();
+    const translated = data?.candidates?.[0]?.content?.parts?.map((p) => p?.text || "").join("").trim();
+    return translated || original;
+  } catch {
+    return original;
+  }
+}
+
+async function generateImage(prompt) {
+  if (!POLLINATIONS_API_KEY) throw new Error("POLLINATIONS_API_KEY is missing.");
+
+  const exactDescription = extractImagePrompt(prompt);
+  const imagePrompt = await translateImagePrompt(exactDescription);
+  const encodedPrompt = encodeURIComponent(imagePrompt);
+
+  const response = await fetch(
+    "https://gen.pollinations.ai/image/" + encodedPrompt + "?model=flux",
+    {
+      method: "GET",
+      headers: {
+        "Authorization": "Bearer " + POLLINATIONS_API_KEY
+      }
     }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error("Pollinations image " + response.status + ": " + errorText);
   }
 
-  if (!imageUrl || typeof imageUrl !== "string") throw new Error(`Pixazo image returned no usable image URL: ${JSON.stringify(data)}`);
-
-  const imageResponse = await fetch(imageUrl);
-  if (!imageResponse.ok) throw new Error(`Pixazo image download ${imageResponse.status}`);
-
-  const arrayBuffer = await imageResponse.arrayBuffer();
+  const arrayBuffer = await response.arrayBuffer();
   return {
     buffer: Buffer.from(arrayBuffer),
-    mimeType: imageResponse.headers.get("content-type") || "image/png"
+    mimeType: response.headers.get("content-type") || "image/png"
   };
 }
 
@@ -727,21 +819,17 @@ async function processBatch(sock, messages) {
     if (mediaInfo) console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
 
     if (isImageRequest(text)) {
-      console.log("🎨 طلب إنشاء صورة عبر Pixazo Flux Schnell.");
+      console.log("🎨 طلب إنشاء صورة عبر Pollinations Flux.");
       const image = await generateImage(text);
-      await showTyping(sock, jid, 1200);
       const sent = await sock.sendMessage(jid, {
         image: image.buffer,
-        mimetype: image.mimeType,
-        caption: "اتفضل 👌"
+        mimetype: image.mimeType
       });
       rememberSentMessage(sent);
       addHistory(jid, "user", text);
-      addHistory(jid, "assistant", "[تم إنشاء صورة وإرسالها]");
-      console.log(`🖼️ تم إرسال صورة إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
+      console.log(`🖼️ تم إرسال الصورة المطلوبة إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
       return;
     }
-
     if (isExcelRequest(text)) {
       console.log("📊 طلب إنشاء Excel.");
       const spec = await generateSpreadsheetSpec(text);
@@ -836,6 +924,7 @@ async function processIncomingMessage(sock, message) {
     if (IGNORE_GROUPS && isGroup(jid)) return;
     if (isIgnored(jid)) return;
     if (!message?.message) return;
+    await rememberMessageContact(sock, message);
     if (processedMessages.has(id)) return;
     rememberProcessed(id);
 
@@ -898,6 +987,30 @@ async function startWhatsApp() {
 
     sock.ev.on("contacts.update", (contacts) => {
       for (const contact of contacts || []) rememberContact(contact);
+    });
+
+    sock.ev.on("lid-mapping.update", async (update) => {
+      try {
+        const entries = Array.isArray(update) ? update : Object.entries(update || {});
+        for (const entry of entries) {
+          const [lid, pn] = Array.isArray(entry) ? entry : [entry?.lid, entry?.pn];
+          if (lid && pn) {
+            const name =
+              contactNames.get(lid) ||
+              contactNames.get(normalizeJid(lid)) ||
+              contactNames.get(pn) ||
+              contactNames.get(normalizeJid(pn)) ||
+              "";
+            if (name) {
+              contactNames.set(lid, name);
+              contactNames.set(normalizeJid(lid), name);
+              contactNames.set(pn, name);
+              contactNames.set(normalizeJid(pn), name);
+            }
+          }
+        }
+        saveMemories();
+      } catch {}
     });
 
     sock.ev.on("connection.update", async (update) => {
@@ -974,7 +1087,7 @@ console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
 console.log(`AI: ${GEMINI_MODEL}`);
 console.log(`Bot name: ${BOT_NAME}`);
-console.log("Image generation: Pixazo Flux Schnell");
+console.log("Image generation: Pollinations Flux");
 console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
