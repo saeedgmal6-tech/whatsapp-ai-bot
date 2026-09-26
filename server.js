@@ -15,7 +15,7 @@ const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const POLLINATIONS_API_KEY = process.env.POLLINATIONS_API_KEY || "";
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";\nconst CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || "";\nconst CLOUDFLARE_IMAGE_MODEL = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -334,45 +334,7 @@ function isExcelRequest(text) {
     && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
 }
 
-function translateImagePrompt(prompt) {
-  // مهم: لا نستخدم Gemini لإعادة صياغة طلب الصورة.
-  // نرسل الوصف الذي كتبه المستخدم نفسه إلى مولد الصور بدون إضافة أو حذف.
-  return String(prompt || "").trim();
-}
-
-async function generateImage(prompt) {
-  if (!POLLINATIONS_API_KEY) throw new Error("POLLINATIONS_API_KEY is missing.");
-
-  const exactDescription = extractImagePrompt(prompt);
-  const imagePrompt = translateImagePrompt(exactDescription);
-
-  console.log("📝 وصف الصورة المرسل كما طلبه المستخدم:", imagePrompt);
-
-  const encodedPrompt = encodeURIComponent(imagePrompt);
-
-  const response = await fetch(
-    "https://gen.pollinations.ai/image/" + encodedPrompt + "?model=flux",
-    {
-      method: "GET",
-      headers: {
-        "Authorization": "Bearer " + POLLINATIONS_API_KEY
-      }
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error("Pollinations image " + response.status + ": " + errorText);
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return {
-    buffer: Buffer.from(arrayBuffer),
-    mimeType: response.headers.get("content-type") || "image/png"
-  };
-}
-
-async function generateSpreadsheetSpec(request) {
+function translateImagePrompt(prompt) {\n  // لا نستخدم Gemini لإعادة صياغة طلب الصورة.\n  // نرسل وصف المستخدم نفسه إلى مولد الصور بعد إزالة أمر إنشاء الصورة فقط.\n  return String(prompt || "").trim();\n}\n\nasync function generateImage(prompt) {\n  if (!CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is missing.");\n  if (!CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is missing.");\n\n  const exactDescription = extractImagePrompt(prompt);\n  const imagePrompt = translateImagePrompt(exactDescription);\n  if (!imagePrompt) throw new Error("Image prompt is empty.");\n  if (imagePrompt.length > 2048) throw new Error("Image prompt is too long. Maximum is 2048 characters.");\n\n  console.log("📝 وصف الصورة المرسل كما طلبه المستخدم:", imagePrompt);\n\n  const response = await fetch(\n    "https://api.cloudflare.com/client/v4/accounts/" +\n      encodeURIComponent(CLOUDFLARE_ACCOUNT_ID) +\n      "/ai/run/" +\n      encodeURIComponent(CLOUDFLARE_IMAGE_MODEL),\n    {\n      method: "POST",\n      headers: {\n        "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,\n        "Content-Type": "application/json"\n      },\n      body: JSON.stringify({ prompt: imagePrompt })\n    }\n  );\n\n  if (!response.ok) {\n    const errorText = await response.text();\n    throw new Error("Cloudflare image " + response.status + ": " + errorText);\n  }\n\n  const data = await response.json();\n  if (!data?.success || !data?.result?.image) throw new Error("Cloudflare returned no image.");\n\n  return {\n    buffer: Buffer.from(data.result.image, "base64"),\n    mimeType: "image/jpeg"\n  };\n}\n\nasync function generateSpreadsheetSpec(request) {
   const prompt = `حوّل طلب المستخدم التالي إلى مواصفات ملف Excel عملية.
 المطلوب JSON فقط بالشكل:
 {"fileName":"اسم_الملف.xlsx","sheetName":"اسم الشيت","headers":["..."],"rows":[["..."],["..."]]}
@@ -788,7 +750,7 @@ async function processBatch(sock, messages) {
     if (mediaInfo) console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
 
     if (isImageRequest(text)) {
-      console.log("🎨 طلب إنشاء صورة عبر Pollinations Flux.");
+      console.log("🎨 طلب إنشاء صورة عبر Cloudflare Workers AI — FLUX.1 schnell.");
       const image = await generateImage(text);
       const sent = await sock.sendMessage(jid, {
         image: image.buffer,
@@ -1056,7 +1018,7 @@ console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
 console.log(`AI: ${GEMINI_MODEL}`);
 console.log(`Bot name: ${BOT_NAME}`);
-console.log("Image generation: Pollinations Flux");
+console.log("Image generation: Cloudflare Workers AI — FLUX.1 schnell");
 console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
