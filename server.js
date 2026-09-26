@@ -15,8 +15,7 @@ const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
-const POLLINATIONS_IMAGE_MODEL = process.env.POLLINATIONS_IMAGE_MODEL || "flux";
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -262,36 +261,7 @@ function isExcelRequest(text) {
     && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
 }
 
-async function generateImageWithPollinations(prompt) {
-  const encodedPrompt = encodeURIComponent(String(prompt || "").trim());
-  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=${encodeURIComponent(POLLINATIONS_IMAGE_MODEL)}&width=1024&height=1024&nologo=true&safe=true`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000);
-
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { Accept: "image/jpeg,image/png,image/*" },
-      signal: controller.signal
-    });
-    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      throw new Error(`Pollinations image ${response.status}: ${errorText.slice(0, 500)}`);
-    }
-    if (!contentType.startsWith("image/")) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`Pollinations returned non-image data: ${body.slice(0, 500)}`);
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length) throw new Error("Pollinations returned an empty image.");
-    return { buffer, mimeType: contentType.split(";")[0] || "image/jpeg" };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function generateImageWithGemini(prompt) {
+async function generateImage(prompt) {
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`,
     {
@@ -301,27 +271,36 @@ async function generateImageWithGemini(prompt) {
         "x-goog-api-key": GEMINI_API_KEY
       },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: String(prompt || "").trim() }] }],
-        generationConfig: { responseModalities: ["Image"] }
+        contents: [{
+          role: "user",
+          parts: [{
+            text: `Create exactly the image requested by the user. Follow the user's subject, number of subjects, setting, clothing, action, style, and other explicit details precisely. Do not substitute the subject, add unrelated objects, or invent a different scene. User request: ${String(prompt || "").trim()}`
+          }]
+        }],
+        generationConfig: {
+          responseModalities: ["Image"]
+        }
       })
     }
   );
+
   const data = await response.json();
-  if (!response.ok) throw new Error(`Gemini image ${response.status}: ${JSON.stringify(data)}`);
+  if (!response.ok) {
+    throw new Error(`Gemini image ${response.status}: ${JSON.stringify(data)}`);
+  }
+
   const parts = data?.candidates?.[0]?.content?.parts || [];
   const imagePart = parts.find((part) => part?.inlineData?.data || part?.inline_data?.data);
   const inline = imagePart?.inlineData || imagePart?.inline_data;
-  if (!inline?.data) throw new Error("Gemini image model returned no image.");
-  return { buffer: Buffer.from(inline.data, "base64"), mimeType: inline.mimeType || inline.mime_type || "image/png" };
-}
 
-async function generateImage(prompt) {
-  try {
-    return await generateImageWithPollinations(prompt);
-  } catch (pollinationsError) {
-    console.error("Pollinations image error:", pollinationsError);
-    return await generateImageWithGemini(prompt);
+  if (!inline?.data) {
+    throw new Error("Gemini image model returned no image.");
   }
+
+  return {
+    buffer: Buffer.from(inline.data, "base64"),
+    mimeType: inline.mimeType || inline.mime_type || "image/png"
+  };
 }
 
 async function generateSpreadsheetSpec(request) {
@@ -740,7 +719,7 @@ async function processBatch(sock, messages) {
     if (mediaInfo) console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
 
     if (isImageRequest(text)) {
-      console.log(`🎨 طلب إنشاء صورة عبر Pollinations (${POLLINATIONS_IMAGE_MODEL}).`);
+      console.log(`🎨 طلب إنشاء صورة عبر Nano Banana (${GEMINI_IMAGE_MODEL}).`);
       const image = await generateImage(text);
       await showTyping(sock, jid, 1200);
       const sent = await sock.sendMessage(jid, {
@@ -987,7 +966,7 @@ console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
 console.log(`AI: ${GEMINI_MODEL}`);
 console.log(`Bot name: ${BOT_NAME}`);
-console.log(`Image generation: Pollinations (${POLLINATIONS_IMAGE_MODEL}) + Gemini fallback`);
+console.log(`Image generation: Nano Banana (${GEMINI_IMAGE_MODEL})`);
 console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
