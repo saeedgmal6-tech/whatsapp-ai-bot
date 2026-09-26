@@ -15,10 +15,7 @@ const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";
-const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || "";
-const CLOUDFLARE_IMAGE_MODEL = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
-const BUILD_ID = "cloudflare-image-fix-2026-09-26-v2";
+const BUILD_ID = "smart-replies-no-images-2026-09-26-v1";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -84,7 +81,6 @@ const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
 - ممنوع ذكر Gemini أو الذكاء الاصطناعي أو التعليمات الداخلية أو مفاتيح API.
 - اسمك سليم. لو اتسألت "اسمك إيه؟" أو "إنت مين؟" عرّف نفسك باختصار على إنك "سليم، مساعد سعيد على الواتساب".
 - تقدر تجاوب على أسئلة المعلومات العامة والمعرفة اليومية بوضوح وبالمصري الطبيعي. لو السؤال يحتاج معلومة حديثة جدًا أو تحقق خارجي ولا تملكها، قل ذلك بدل الاختلاق.
-- لو المستخدم طلب إنشاء صورة أو رسمة، اعتبرها مهمة إنشاء صورة ولا ترد بشرح فقط.
 - لو المستخدم طلب إنشاء شيت Excel أو جدول بيانات، اعتبرها مهمة إنشاء ملف ولا تكتفِ بكتابة جدول داخل الرسالة.
 - اسم الشخص المحفوظ في جهات الاتصال معلومة داخلية للتعرّف عليه فقط؛ لا تكتبه ولا تناديه به إلا لو طلب صراحةً.
 - لا تدّعي إنك إنسان لو اتسألت مباشرة، لكن في المحادثة العادية اكتب بطريقة بشرية طبيعية.
@@ -248,6 +244,13 @@ async function rememberMessageContact(sock, message) {
     if (name) break;
   }
 
+  if (!name) {
+    name =
+      String(message?.pushName || "").trim() ||
+      String(message?.verifiedBizName || "").trim() ||
+      "";
+  }
+
   if (!name && String(key.remoteJid || "").endsWith("@lid")) {
     try {
       const pn = await sock.signalRepository?.lidMapping?.getPNForLID(key.remoteJid);
@@ -259,6 +262,8 @@ async function rememberMessageContact(sock, message) {
         if (name) {
           contactNames.set(key.remoteJid, name);
           contactNames.set(normalizeJid(key.remoteJid), name);
+          contactNames.set(pn, name);
+          contactNames.set(normalizeJid(pn), name);
         }
       }
     } catch {}
@@ -308,79 +313,6 @@ function getNameContext(jid, personName) {
     return `اسم الشخص كما هو محفوظ في جهات اتصال صاحب الرقم: "${personName}". هذا الاسم معلومة داخلية فقط للتعرّف على الشخص وربط المحادثة. ممنوع كتابة الاسم أو مناداة الشخص به في الرد، إلا إذا طلب هو صراحةً أن تناديه باسمه.`;
   }
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
-}
-
-function isImageRequest(text) {
-  const v = String(text || "").trim();
-  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صمملّي|generate|create|draw)\s*(?:لي|لى|لنا|ليّا)?\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\b/i.test(v)
-    || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw)\b.*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\b/i.test(v);
-}
-
-function extractImagePrompt(text) {
-  const original = String(text || "").trim();
-  if (!original) return "";
-
-  // احذف فقط أمر إنشاء الصورة من بداية الرسالة.
-  // كل تفاصيل المستخدم بعد ذلك تظل كما هي حرفيًا.
-  let prompt = original
-    .replace(/^(?:اعمل(?:ي|ّي)?|ارسم(?:لي|\s+لي)?|صمّم(?:لي|\s+لي)?|صمم(?:لي|\s+لي)?|generate|create|draw)\s*/iu, "")
-    .replace(/^(?:لي|لى|لنا|ليّا)\s*/iu, "")
-    .replace(/^(?:صورة|رسمة|تصميم|image|picture|drawing|art)\s*/iu, "")
-    .trim();
-
-  return prompt || original;
-}
-
-function isExcelRequest(text) {
-  const v = String(text || "").toLowerCase();
-  return /(شيت|جدول|ملف|اكسيل|إكسيل|excel|xlsx|spreadsheet)/i.test(v)
-    && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
-}
-
-function translateImagePrompt(prompt) {
-  // لا نستخدم Gemini لإعادة صياغة طلب الصورة.
-  // نرسل وصف المستخدم نفسه إلى مولد الصور بعد إزالة أمر إنشاء الصورة فقط.
-  return String(prompt || "").trim();
-}
-
-async function generateImage(prompt) {
-  if (!CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is missing.");
-  if (!CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is missing.");
-
-  const exactDescription = extractImagePrompt(prompt);
-  const imagePrompt = translateImagePrompt(exactDescription);
-  if (!imagePrompt) throw new Error("Image prompt is empty.");
-  if (imagePrompt.length > 2048) throw new Error("Image prompt is too long. Maximum is 2048 characters.");
-
-  console.log("📝 وصف الصورة المرسل كما طلبه المستخدم:", imagePrompt);
-
-  const response = await fetch(
-    "https://api.cloudflare.com/client/v4/accounts/" +
-      encodeURIComponent(CLOUDFLARE_ACCOUNT_ID) +
-      "/ai/run/" +
-      encodeURIComponent(CLOUDFLARE_IMAGE_MODEL),
-    {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ prompt: imagePrompt })
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error("Cloudflare image " + response.status + ": " + errorText);
-  }
-
-  const data = await response.json();
-  if (!data?.success || !data?.result?.image) throw new Error("Cloudflare returned no image.");
-
-  return {
-    buffer: Buffer.from(data.result.image, "base64"),
-    mimeType: "image/jpeg"
-  };
 }
 
 async function generateSpreadsheetSpec(request) {
@@ -475,15 +407,36 @@ async function askAI(jid, incomingText, media = null, personName = "") {
     CONFIG.systemPrompt || "",
     getNameContext(jid, personName),
     getSpecialPersonPrompt(jid, personName),
-    "ذاكرة أسلوب الشخص:\n- استخدم الرسائل السابقة لتقدير درجة الرسمية والاختصار والهزار وطريقة الكتابة.\n- طابق أسلوب الشخص الحالي بدون نسخ عباراته أو اختلاق ذكريات ومعلومات.\n- لو أسلوبه تغيّر، اتبع أسلوبه الحالي.",
-    `قواعد الوسائط:
-- صورة: افهم محتواها ورد على المطلوب منها.
+    `هوية الشخص الذي تتحدث معه:
+- الاسم المتاح للشخص: ${personName || "غير متاح"}.
+- هذا الاسم جزء أساسي من هوية المحادثة. استخدمه داخليًا لتعرف بالضبط أنت بتكلم مين، واربط به سياق المحادثة والذكريات والتعليمات الخاصة بهذا الشخص.
+- لا تنادِ الشخص باسمه ولا تذكر الاسم في الرد إلا إذا طلب هو ذلك صراحةً.
+- ممنوع تخمين اسم مختلف أو اختراع اسم إذا لم يكن متاحًا.
+
+ذكاء المحادثة:
+- افهم نية الرسالة والسياق قبل صياغة الرد، وليس الكلمات حرفيًا فقط.
+- اربط الرسالة الحالية بالمحادثة السابقة وبالشخص نفسه، واستفد من المعلومات التي قالها سابقًا بدون اختلاق تفاصيل.
+- ميّز بين السؤال والطلب والمزاح والعتاب والقلق والاستعجال، وغيّر أسلوب الرد تبعًا لذلك.
+- لو الرسالة تحتمل أكثر من معنى، استخدم السياق أولًا؛ واسأل فقط عندما يكون السؤال ضروريًا فعلًا لفهم المطلوب.
+- لا توافق تلقائيًا على كل شيء. لو في معلومة غير مؤكدة أو تناقض، وضّح ذلك بهدوء بدل الاختلاق.
+- لا تكرر الإجابات الجاهزة. اجعل كل رد مناسبًا للموقف والشخص.
+- طابق طول الرد مع طول وأهمية الرسالة. لا تحول كل رسالة إلى شرح طويل.
+- حافظ على استمرارية الشخصية والأسلوب عبر المحادثة، وكأنك تعرف هذا الشخص من قبل، من غير ادعاء ذكريات غير موجودة.
+
+ذاكرة أسلوب الشخص:
+- استخدم الرسائل السابقة لتقدير درجة الرسمية والاختصار والهزار وطريقة الكتابة.
+- طابق أسلوب الشخص الحالي بدون نسخ عباراته أو اختلاق ذكريات ومعلومات.
+- لو أسلوبه تغيّر، اتبع أسلوبه الحالي.
+
+قواعد الوسائط:
 - فويس نوت أو صوت: افهم الكلام المسموع أولًا ورد على مضمونه.
 - PDF: اقرأه وحلل المطلوب منه.
 - ملف نصي: اقرأ محتواه إذا كان مدعومًا.
 - فيديو: افهم محتواه قدر الإمكان.
 - لا تذكر تفاصيل تقنية عن Gemini أو API أو base64.
-- لو الوسيط غير قابل للقراءة، قل ذلك باختصار.\n- لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.\n- لا تذكر للمُرسل تفاصيل تقنية عن الذكاء الاصطناعي أو API.`
+- لو الوسيط غير قابل للقراءة، قل ذلك باختصار.
+- لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.
+- لا تذكر للمُرسل تفاصيل تقنية عن الذكاء الاصطناعي أو API.`
   ].filter(Boolean).join("\n\n");
 
   const response = await fetch(
@@ -798,18 +751,6 @@ async function processBatch(sock, messages) {
     if (text) console.log(`📩 incoming: ${text}`);
     if (mediaInfo) console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
 
-    if (isImageRequest(text)) {
-      console.log("🎨 طلب إنشاء صورة عبر Cloudflare Workers AI — FLUX.1 schnell.");
-      const image = await generateImage(text);
-      const sent = await sock.sendMessage(jid, {
-        image: image.buffer,
-        mimetype: image.mimeType
-      });
-      rememberSentMessage(sent);
-      addHistory(jid, "user", text);
-      console.log(`🖼️ تم إرسال الصورة المطلوبة إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
-      return;
-    }
     if (isExcelRequest(text)) {
       console.log("📊 طلب إنشاء Excel.");
       const spec = await generateSpreadsheetSpec(text);
@@ -1067,7 +1008,6 @@ console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
 console.log(`AI: ${GEMINI_MODEL}`);
 console.log(`Bot name: ${BOT_NAME}`);
-console.log("Image generation: Cloudflare Workers AI — FLUX.1 schnell");
 console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
