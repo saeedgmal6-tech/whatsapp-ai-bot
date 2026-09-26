@@ -15,7 +15,9 @@ const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";\nconst CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || "";\nconst CLOUDFLARE_IMAGE_MODEL = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || "";
+const CLOUDFLARE_IMAGE_MODEL = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -309,8 +311,8 @@ function getNameContext(jid, personName) {
 
 function isImageRequest(text) {
   const v = String(text || "").trim();
-  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صمملّي|generate|create|draw)\\s*(?:لي|لى|لنا|ليّا)?\\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\\b/i.test(v)
-    || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw)\\b.*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\\b/i.test(v);
+  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صمملّي|generate|create|draw)\s*(?:لي|لى|لنا|ليّا)?\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\b/i.test(v)
+    || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw)\b.*(?:صورة|رسمة|تصميم|image|picture|drawing|art)\b/i.test(v);
 }
 
 function extractImagePrompt(text) {
@@ -320,9 +322,9 @@ function extractImagePrompt(text) {
   // احذف فقط أمر إنشاء الصورة من بداية الرسالة.
   // كل تفاصيل المستخدم بعد ذلك تظل كما هي حرفيًا.
   let prompt = original
-    .replace(/^(?:اعمل(?:ي|ّي)?|ارسم(?:لي|\s+لي)?|صمّم(?:لي|\s+لي)?|صمم(?:لي|\s+لي)?|generate|create|draw)\\s*/iu, "")
-    .replace(/^(?:لي|لى|لنا|ليّا)\\s*/iu, "")
-    .replace(/^(?:صورة|رسمة|تصميم|image|picture|drawing|art)\\s*/iu, "")
+    .replace(/^(?:اعمل(?:ي|ّي)?|ارسم(?:لي|\s+لي)?|صمّم(?:لي|\s+لي)?|صمم(?:لي|\s+لي)?|generate|create|draw)\s*/iu, "")
+    .replace(/^(?:لي|لى|لنا|ليّا)\s*/iu, "")
+    .replace(/^(?:صورة|رسمة|تصميم|image|picture|drawing|art)\s*/iu, "")
     .trim();
 
   return prompt || original;
@@ -334,7 +336,53 @@ function isExcelRequest(text) {
     && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
 }
 
-function translateImagePrompt(prompt) {\n  // لا نستخدم Gemini لإعادة صياغة طلب الصورة.\n  // نرسل وصف المستخدم نفسه إلى مولد الصور بعد إزالة أمر إنشاء الصورة فقط.\n  return String(prompt || "").trim();\n}\n\nasync function generateImage(prompt) {\n  if (!CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is missing.");\n  if (!CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is missing.");\n\n  const exactDescription = extractImagePrompt(prompt);\n  const imagePrompt = translateImagePrompt(exactDescription);\n  if (!imagePrompt) throw new Error("Image prompt is empty.");\n  if (imagePrompt.length > 2048) throw new Error("Image prompt is too long. Maximum is 2048 characters.");\n\n  console.log("📝 وصف الصورة المرسل كما طلبه المستخدم:", imagePrompt);\n\n  const response = await fetch(\n    "https://api.cloudflare.com/client/v4/accounts/" +\n      encodeURIComponent(CLOUDFLARE_ACCOUNT_ID) +\n      "/ai/run/" +\n      encodeURIComponent(CLOUDFLARE_IMAGE_MODEL),\n    {\n      method: "POST",\n      headers: {\n        "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,\n        "Content-Type": "application/json"\n      },\n      body: JSON.stringify({ prompt: imagePrompt })\n    }\n  );\n\n  if (!response.ok) {\n    const errorText = await response.text();\n    throw new Error("Cloudflare image " + response.status + ": " + errorText);\n  }\n\n  const data = await response.json();\n  if (!data?.success || !data?.result?.image) throw new Error("Cloudflare returned no image.");\n\n  return {\n    buffer: Buffer.from(data.result.image, "base64"),\n    mimeType: "image/jpeg"\n  };\n}\n\nasync function generateSpreadsheetSpec(request) {
+function translateImagePrompt(prompt) {
+  // لا نستخدم Gemini لإعادة صياغة طلب الصورة.
+  // نرسل وصف المستخدم نفسه إلى مولد الصور بعد إزالة أمر إنشاء الصورة فقط.
+  return String(prompt || "").trim();
+}
+
+async function generateImage(prompt) {
+  if (!CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is missing.");
+  if (!CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is missing.");
+
+  const exactDescription = extractImagePrompt(prompt);
+  const imagePrompt = translateImagePrompt(exactDescription);
+  if (!imagePrompt) throw new Error("Image prompt is empty.");
+  if (imagePrompt.length > 2048) throw new Error("Image prompt is too long. Maximum is 2048 characters.");
+
+  console.log("📝 وصف الصورة المرسل كما طلبه المستخدم:", imagePrompt);
+
+  const response = await fetch(
+    "https://api.cloudflare.com/client/v4/accounts/" +
+      encodeURIComponent(CLOUDFLARE_ACCOUNT_ID) +
+      "/ai/run/" +
+      encodeURIComponent(CLOUDFLARE_IMAGE_MODEL),
+    {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ prompt: imagePrompt })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error("Cloudflare image " + response.status + ": " + errorText);
+  }
+
+  const data = await response.json();
+  if (!data?.success || !data?.result?.image) throw new Error("Cloudflare returned no image.");
+
+  return {
+    buffer: Buffer.from(data.result.image, "base64"),
+    mimeType: "image/jpeg"
+  };
+}
+
+async function generateSpreadsheetSpec(request) {
   const prompt = `حوّل طلب المستخدم التالي إلى مواصفات ملف Excel عملية.
 المطلوب JSON فقط بالشكل:
 {"fileName":"اسم_الملف.xlsx","sheetName":"اسم الشيت","headers":["..."],"rows":[["..."],["..."]]}
