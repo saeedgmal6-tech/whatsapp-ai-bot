@@ -18,6 +18,7 @@ const BOT_NAME = process.env.BOT_NAME || "سليم";
 const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || "";
 const CLOUDFLARE_IMAGE_MODEL = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
+const BUILD_ID = "cloudflare-image-fix-2026-09-26-v2";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -1071,6 +1072,7 @@ console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
 console.log("Memory + media + controls: ON");
+console.log(`Build: ${BUILD_ID}`);
 console.log("=================================");
 
 startWhatsApp().catch((error) => {
