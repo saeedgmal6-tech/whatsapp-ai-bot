@@ -314,16 +314,18 @@ function isImageRequest(text) {
 }
 
 function extractImagePrompt(text) {
-  let prompt = String(text || "").trim();
+  const original = String(text || "").trim();
+  if (!original) return "";
 
-  prompt = prompt
-    .replace(/^(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صمملّي)\\s*/i, "")
-    .replace(/^(?:لي|لى|لنا|ليّا)\\s*/i, "")
-    .replace(/^(?:صورة|رسمة|تصميم)\\s*/i, "")
+  // احذف فقط أمر إنشاء الصورة من بداية الرسالة.
+  // كل تفاصيل المستخدم بعد ذلك تظل كما هي حرفيًا.
+  let prompt = original
+    .replace(/^(?:اعمل(?:ي|ّي)?|ارسم(?:لي|\s+لي)?|صمّم(?:لي|\s+لي)?|صمم(?:لي|\s+لي)?|generate|create|draw)\\s*/iu, "")
+    .replace(/^(?:لي|لى|لنا|ليّا)\\s*/iu, "")
+    .replace(/^(?:صورة|رسمة|تصميم|image|picture|drawing|art)\\s*/iu, "")
     .trim();
 
-  if (!prompt) prompt = String(text || "").trim();
-  return prompt;
+  return prompt || original;
 }
 
 function isExcelRequest(text) {
@@ -332,53 +334,20 @@ function isExcelRequest(text) {
     && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
 }
 
-async function translateImagePrompt(prompt) {
-  const original = String(prompt || "").trim();
-  if (!original) return original;
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": GEMINI_API_KEY
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{
-              text: `You convert an image request into one precise English image-generation prompt.
-Preserve EVERY requested subject, number, color, clothing item, pose, action, location, object, and relationship exactly.
-Do not add, remove, replace, or invent anything.
-Do not interpret the request beyond what is explicitly stated.
-If the request contains text that must appear in the image, preserve that text exactly.
-Return ONLY the final image prompt in English.`
-            }]
-          },
-          contents: [{ role: "user", parts: [{ text: original }] }],
-          generationConfig: {
-            maxOutputTokens: 500,
-            temperature: 0
-          }
-        })
-      }
-    );
-
-    if (!response.ok) return original;
-    const data = await response.json();
-    const translated = data?.candidates?.[0]?.content?.parts?.map((p) => p?.text || "").join("").trim();
-    return translated || original;
-  } catch {
-    return original;
-  }
+function translateImagePrompt(prompt) {
+  // مهم: لا نستخدم Gemini لإعادة صياغة طلب الصورة.
+  // نرسل الوصف الذي كتبه المستخدم نفسه إلى مولد الصور بدون إضافة أو حذف.
+  return String(prompt || "").trim();
 }
 
 async function generateImage(prompt) {
   if (!POLLINATIONS_API_KEY) throw new Error("POLLINATIONS_API_KEY is missing.");
 
   const exactDescription = extractImagePrompt(prompt);
-  const imagePrompt = await translateImagePrompt(exactDescription);
+  const imagePrompt = translateImagePrompt(exactDescription);
+
+  console.log("📝 وصف الصورة المرسل كما طلبه المستخدم:", imagePrompt);
+
   const encodedPrompt = encodeURIComponent(imagePrompt);
 
   const response = await fetch(
