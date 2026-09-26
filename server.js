@@ -15,7 +15,7 @@ const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
+const PIXAZO_API_KEY = process.env.PIXAZO_API_KEY || "";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -262,44 +262,52 @@ function isExcelRequest(text) {
 }
 
 async function generateImage(prompt) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY
-      },
-      body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [{
-            text: `Create exactly the image requested by the user. Follow the user's subject, number of subjects, setting, clothing, action, style, and other explicit details precisely. Do not substitute the subject, add unrelated objects, or invent a different scene. User request: ${String(prompt || "").trim()}`
-          }]
-        }],
-        generationConfig: {
-          responseModalities: ["Image"]
-        }
-      })
-    }
-  );
+  if (!PIXAZO_API_KEY) throw new Error("PIXAZO_API_KEY is missing.");
+
+  const response = await fetch("https://gateway.pixazo.ai/flux/text-to-image", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Ocp-Apim-Subscription-Key": PIXAZO_API_KEY
+    },
+    body: JSON.stringify({ prompt: String(prompt || "").trim() })
+  });
 
   const data = await response.json();
-  if (!response.ok) {
-    throw new Error(`Gemini image ${response.status}: ${JSON.stringify(data)}`);
+  if (!response.ok) throw new Error(`Pixazo image ${response.status}: ${JSON.stringify(data)}`);
+
+  let imageUrl = data?.output?.media_url || data?.output?.url || data?.media_url || data?.image_url || data?.url;
+  const requestId = data?.request_id || data?.requestId || data?.id;
+
+  if (!imageUrl && requestId) {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await sleep(1500);
+      const statusResponse = await fetch("https://gateway.pixazo.ai/flux-1-schnell/v1/checkStatus", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Ocp-Apim-Subscription-Key": PIXAZO_API_KEY
+        },
+        body: JSON.stringify({ requestId })
+      });
+      const statusData = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(`Pixazo image status ${statusResponse.status}: ${JSON.stringify(statusData)}`);
+      const status = String(statusData?.status || "").toLowerCase();
+      imageUrl = statusData?.output?.media_url || statusData?.output || statusData?.media_url || statusData?.url;
+      if (typeof imageUrl === "string" && imageUrl) break;
+      if (status === "failed" || status === "error") throw new Error(`Pixazo image generation failed: ${JSON.stringify(statusData)}`);
+    }
   }
 
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  const imagePart = parts.find((part) => part?.inlineData?.data || part?.inline_data?.data);
-  const inline = imagePart?.inlineData || imagePart?.inline_data;
+  if (!imageUrl || typeof imageUrl !== "string") throw new Error(`Pixazo image returned no usable image URL: ${JSON.stringify(data)}`);
 
-  if (!inline?.data) {
-    throw new Error("Gemini image model returned no image.");
-  }
+  const imageResponse = await fetch(imageUrl);
+  if (!imageResponse.ok) throw new Error(`Pixazo image download ${imageResponse.status}`);
 
+  const arrayBuffer = await imageResponse.arrayBuffer();
   return {
-    buffer: Buffer.from(inline.data, "base64"),
-    mimeType: inline.mimeType || inline.mime_type || "image/png"
+    buffer: Buffer.from(arrayBuffer),
+    mimeType: imageResponse.headers.get("content-type") || "image/png"
   };
 }
 
@@ -719,7 +727,7 @@ async function processBatch(sock, messages) {
     if (mediaInfo) console.log(`📎 incoming media: ${mediaInfo.label}${mediaInfo.fileName ? ` (${mediaInfo.fileName})` : ""}`);
 
     if (isImageRequest(text)) {
-      console.log(`🎨 طلب إنشاء صورة عبر Nano Banana (${GEMINI_IMAGE_MODEL}).`);
+      console.log("🎨 طلب إنشاء صورة عبر Pixazo Flux Schnell.");
       const image = await generateImage(text);
       await showTyping(sock, jid, 1200);
       const sent = await sock.sendMessage(jid, {
@@ -966,7 +974,7 @@ console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
 console.log(`AI: ${GEMINI_MODEL}`);
 console.log(`Bot name: ${BOT_NAME}`);
-console.log(`Image generation: Nano Banana (${GEMINI_IMAGE_MODEL})`);
+console.log("Image generation: Pixazo Flux Schnell");
 console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
