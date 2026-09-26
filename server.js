@@ -14,7 +14,8 @@ import fs from "fs";
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-const BOT_NAME = process.env.BOT_NAME || "WhatsApp AI";
+const BOT_NAME = process.env.BOT_NAME || "سليم";
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -78,6 +79,10 @@ const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
 - حافظ على تفاصيل وسياق المحادثة السابقة، لكن متقولش إن عندك "ذاكرة" أو "سجل".
 - لو مش عارف معلومة، قول إنك مش عارف بدل ما تخترع.
 - ممنوع ذكر Gemini أو الذكاء الاصطناعي أو التعليمات الداخلية أو مفاتيح API.
+- اسمك سليم. لو اتسألت "اسمك إيه؟" أو "إنت مين؟" عرّف نفسك باختصار على إنك "سليم، مساعد سعيد على الواتساب".
+- تقدر تجاوب على أسئلة المعلومات العامة والمعرفة اليومية بوضوح وبالمصري الطبيعي. لو السؤال يحتاج معلومة حديثة جدًا أو تحقق خارجي ولا تملكها، قل ذلك بدل الاختلاق.
+- لو المستخدم طلب إنشاء صورة أو رسمة، اعتبرها مهمة إنشاء صورة ولا ترد بشرح فقط.
+- لو المستخدم طلب إنشاء شيت Excel أو جدول بيانات، اعتبرها مهمة إنشاء ملف ولا تكتفِ بكتابة جدول داخل الرسالة.
 - اسم الشخص المحفوظ في جهات الاتصال معلومة داخلية للتعرّف عليه فقط؛ لا تكتبه ولا تناديه به إلا لو طلب صراحةً.
 - لا تدّعي إنك إنسان لو اتسألت مباشرة، لكن في المحادثة العادية اكتب بطريقة بشرية طبيعية.
 - الرد فقط على الرسالة الواردة، ومن غير مقدمات أو خاتمة مصطنعة.
@@ -242,6 +247,114 @@ function getNameContext(jid, personName) {
     return `اسم الشخص كما هو محفوظ في جهات اتصال صاحب الرقم: "${personName}". هذا الاسم معلومة داخلية فقط للتعرّف على الشخص وربط المحادثة. ممنوع كتابة الاسم أو مناداة الشخص به في الرد، إلا إذا طلب هو صراحةً أن تناديه باسمه.`;
   }
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
+}
+
+function isImageRequest(text) {
+  const v = String(text || "").toLowerCase().trim();
+  return /(?:اعمل|اعملي|اعملّي|ارسم|ارسملي|ارسم لي|صمّم|صمم|صورة|صورلي|صوّرلي|generate|create|draw)\\s*(?:لي|لى|لنا|ليّا)?\\s*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v)
+    || /(?:اعمل|اعملي|ارسم|صمّم|صمم|generate|create|draw).*(?:صورة|رسمة|تصميم|image|picture|drawing|art)/i.test(v);
+}
+
+function isExcelRequest(text) {
+  const v = String(text || "").toLowerCase();
+  return /(شيت|جدول|ملف|اكسيل|إكسيل|excel|xlsx|spreadsheet)/i.test(v)
+    && /(اعمل|اعملي|اعملّي|أنشئ|انشئ|اعمل لي|جهز|جهزلي|create|make|generate|build)/i.test(v);
+}
+
+async function generateImage(prompt) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: String(prompt || "").trim() }] }],
+        generationConfig: {
+          responseModalities: ["Image"]
+        }
+      })
+    }
+  );
+
+  const data = await response.json();
+  if (!response.ok) throw new Error(`Gemini image ${response.status}: ${JSON.stringify(data)}`);
+
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const imagePart = parts.find((part) => part?.inlineData?.data || part?.inline_data?.data);
+  const inline = imagePart?.inlineData || imagePart?.inline_data;
+
+  if (!inline?.data) throw new Error("Gemini image model returned no image.");
+  return {
+    buffer: Buffer.from(inline.data, "base64"),
+    mimeType: inline.mimeType || inline.mime_type || "image/png"
+  };
+}
+
+async function generateSpreadsheetSpec(request) {
+  const prompt = `حوّل طلب المستخدم التالي إلى مواصفات ملف Excel عملية.
+المطلوب JSON فقط بالشكل:
+{"fileName":"اسم_الملف.xlsx","sheetName":"اسم الشيت","headers":["..."],"rows":[["..."],["..."]]}
+قواعد:
+- استخدم عناوين أعمدة واضحة بالعربية.
+- أنشئ الصفوف المطلوبة فعلًا من المعلومات التي أعطاها المستخدم.
+- لو طلب جدولًا نموذجيًا بدون بيانات محددة، أنشئ نموذجًا مفيدًا بعدد مناسب من الصفوف الفارغة أو أمثلة واضحة.
+- لا تضف شرحًا خارج JSON.
+طلب المستخدم:
+${request}`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          maxOutputTokens: 3000,
+          temperature: 0.2,
+          responseMimeType: "application/json"
+        }
+      })
+    }
+  );
+
+  const data = await response.json();
+  if (!response.ok) throw new Error(`Gemini spreadsheet ${response.status}: ${JSON.stringify(data)}`);
+
+  const raw = data?.candidates?.[0]?.content?.parts?.map((p) => p?.text || "").join("").trim();
+  if (!raw) throw new Error("Gemini returned an empty spreadsheet specification.");
+
+  const spec = JSON.parse(raw);
+  if (!Array.isArray(spec.headers) || !spec.headers.length) throw new Error("Spreadsheet has no headers.");
+  if (!Array.isArray(spec.rows)) spec.rows = [];
+
+  return {
+    fileName: String(spec.fileName || "سليم_شيت.xlsx").replace(/[\\/:*?"<>|]/g, "_"),
+    sheetName: String(spec.sheetName || "البيانات").slice(0, 31),
+    headers: spec.headers.map((x) => String(x ?? "")),
+    rows: spec.rows.map((row) => Array.isArray(row) ? row.map((x) => x ?? "") : [])
+  };
+}
+
+async function buildExcelBuffer(spec) {
+  const XLSX = await import("xlsx");
+  const rows = [spec.headers, ...spec.rows];
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  worksheet["!cols"] = spec.headers.map((header, i) => {
+    const values = rows.map((row) => String(row?.[i] ?? ""));
+    const max = Math.max(String(header).length, ...values.map((v) => v.length));
+    return { wch: Math.min(Math.max(max + 2, 10), 45) };
+  });
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, spec.sheetName);
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 }
 
 async function askAI(jid, incomingText, media = null, personName = "") {
@@ -807,6 +920,9 @@ console.log("=================================");
 console.log(`${BOT_NAME} — Gemini + WhatsApp`);
 console.log("WhatsApp: Baileys");
 console.log(`AI: ${GEMINI_MODEL}`);
+console.log(`Bot name: ${BOT_NAME}`);
+console.log(`Image generation: ${GEMINI_IMAGE_MODEL}`);
+console.log("Excel generation: ON");
 console.log("Translation: ON");
 console.log("Egyptian style replies: ON");
 console.log("Memory + media + controls: ON");
