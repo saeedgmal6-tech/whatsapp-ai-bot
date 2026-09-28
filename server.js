@@ -14,6 +14,7 @@ import fs from "fs";
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
 const BUILD_ID = "smart-replies-no-images-2026-09-26-v1";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
@@ -333,147 +334,74 @@ async function generateSpreadsheetSpec(request) {
 طلب المستخدم:
 ${request}`;
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY
-      },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: 3000,
-          temperature: 0.2,
-          responseMimeType: "application/json"
+  const models = [...new Set([GEMINI_MODEL, GEMINI_FALLBACK_MODEL].filter(Boolean))];
+  let lastError = null;
+
+  for (let attempt = 0; attempt < models.length; attempt++) {
+    const model = models[attempt];
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: dynamicPrompt }] },
+            contents,
+            generationConfig: {
+              maxOutputTokens: 700,
+              temperature: 0.7
+            }
+          })
         }
-      })
-    }
-  );
+      );
 
-  const data = await response.json();
-  if (!response.ok) throw new Error(`Gemini spreadsheet ${response.status}: ${JSON.stringify(data)}`);
+      const data = await response.json();
 
-  const raw = data?.candidates?.[0]?.content?.parts?.map((p) => p?.text || "").join("").trim();
-  if (!raw) throw new Error("Gemini returned an empty spreadsheet specification.");
+      if (!response.ok) {
+        const errorText = JSON.stringify(data);
+        lastError = new Error(`Gemini ${response.status} [${model}]: ${errorText}`);
 
-  const spec = JSON.parse(raw);
-  if (!Array.isArray(spec.headers) || !spec.headers.length) throw new Error("Spreadsheet has no headers.");
-  if (!Array.isArray(spec.rows)) spec.rows = [];
+        const retryable =
+          response.status === 429 ||
+          response.status === 500 ||
+          response.status === 502 ||
+          response.status === 503 ||
+          response.status === 504 ||
+          /UNAVAILABLE|high demand|temporar/i.test(errorText);
 
-  return {
-    fileName: String(spec.fileName || "سليم_شيت.xlsx").replace(/[\\/:*?"<>|]/g, "_"),
-    sheetName: String(spec.sheetName || "البيانات").slice(0, 31),
-    headers: spec.headers.map((x) => String(x ?? "")),
-    rows: spec.rows.map((row) => Array.isArray(row) ? row.map((x) => x ?? "") : [])
-  };
-}
+        if (retryable && attempt < models.length - 1) {
+          console.log(`⚠️ Gemini ${model} غير متاح مؤقتًا، تجربة ${models[attempt + 1]}...`);
+          await sleep(1200);
+          continue;
+        }
 
-async function buildExcelBuffer(spec) {
-  const XLSX = await import("xlsx");
-  const rows = [spec.headers, ...spec.rows];
-  const worksheet = XLSX.utils.aoa_to_sheet(rows);
-  worksheet["!cols"] = spec.headers.map((header, i) => {
-    const values = rows.map((row) => String(row?.[i] ?? ""));
-    const max = Math.max(String(header).length, ...values.map((v) => v.length));
-    return { wch: Math.min(Math.max(max + 2, 10), 45) };
-  });
-
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, spec.sheetName);
-  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
-}
-
-async function askAI(jid, incomingText, media = null, personName = "") {
-  const history = histories.get(jid) || [];
-  const contents = history.map((item) => ({
-    role: item.role === "assistant" ? "model" : "user",
-    parts: [{ text: item.content }]
-  }));
-
-  const userParts = [];
-  if (incomingText) userParts.push({ text: incomingText });
-  if (media?.data && media?.mimeType) {
-    userParts.push({
-      inlineData: {
-        mimeType: media.mimeType,
-        data: media.data
+        throw lastError;
       }
-    });
+
+      const reply = data?.candidates?.[0]?.content?.parts
+        ?.map((part) => part?.text || "")
+        .join("")
+        .trim();
+
+      if (!reply) throw new Error(`Gemini [${model}] returned an empty reply.`);
+      if (attempt > 0) console.log(`✅ تم استخدام Gemini الاحتياطي: ${model}`);
+      return reply;
+    } catch (error) {
+      lastError = error;
+      if (attempt < models.length - 1 && /Gemini (429|500|502|503|504)|UNAVAILABLE|high demand|temporar/i.test(String(error?.message || error))) {
+        console.log(`⚠️ فشل ${model}، تجربة ${models[attempt + 1]}...`);
+        await sleep(1200);
+        continue;
+      }
+      throw error;
+    }
   }
 
-  contents.push({
-    role: "user",
-    parts: userParts.length ? userParts : [{ text: "وصلت رسالة بدون نص." }]
-  });
-
-  const dynamicPrompt = [
-    SYSTEM_PROMPT,
-    CONFIG.systemPrompt || "",
-    getNameContext(jid, personName),
-    getSpecialPersonPrompt(jid, personName),
-    `هوية الشخص الذي تتحدث معه:
-- الاسم المتاح للشخص: ${personName || "غير متاح"}.
-- هذا الاسم جزء أساسي من هوية المحادثة. استخدمه داخليًا لتعرف بالضبط أنت بتكلم مين، واربط به سياق المحادثة والذكريات والتعليمات الخاصة بهذا الشخص.
-- لا تنادِ الشخص باسمه ولا تذكر الاسم في الرد إلا إذا طلب هو ذلك صراحةً.
-- ممنوع تخمين اسم مختلف أو اختراع اسم إذا لم يكن متاحًا.
-
-ذكاء المحادثة:
-- افهم نية الرسالة والسياق قبل صياغة الرد، وليس الكلمات حرفيًا فقط.
-- اربط الرسالة الحالية بالمحادثة السابقة وبالشخص نفسه، واستفد من المعلومات التي قالها سابقًا بدون اختلاق تفاصيل.
-- ميّز بين السؤال والطلب والمزاح والعتاب والقلق والاستعجال، وغيّر أسلوب الرد تبعًا لذلك.
-- لو الرسالة تحتمل أكثر من معنى، استخدم السياق أولًا؛ واسأل فقط عندما يكون السؤال ضروريًا فعلًا لفهم المطلوب.
-- لا توافق تلقائيًا على كل شيء. لو في معلومة غير مؤكدة أو تناقض، وضّح ذلك بهدوء بدل الاختلاق.
-- لا تكرر الإجابات الجاهزة. اجعل كل رد مناسبًا للموقف والشخص.
-- طابق طول الرد مع طول وأهمية الرسالة. لا تحول كل رسالة إلى شرح طويل.
-- حافظ على استمرارية الشخصية والأسلوب عبر المحادثة، وكأنك تعرف هذا الشخص من قبل، من غير ادعاء ذكريات غير موجودة.
-
-ذاكرة أسلوب الشخص:
-- استخدم الرسائل السابقة لتقدير درجة الرسمية والاختصار والهزار وطريقة الكتابة.
-- طابق أسلوب الشخص الحالي بدون نسخ عباراته أو اختلاق ذكريات ومعلومات.
-- لو أسلوبه تغيّر، اتبع أسلوبه الحالي.
-
-قواعد الوسائط:
-- فويس نوت أو صوت: افهم الكلام المسموع أولًا ورد على مضمونه.
-- PDF: اقرأه وحلل المطلوب منه.
-- ملف نصي: اقرأ محتواه إذا كان مدعومًا.
-- فيديو: افهم محتواه قدر الإمكان.
-- لا تذكر تفاصيل تقنية عن Gemini أو API أو base64.
-- لو الوسيط غير قابل للقراءة، قل ذلك باختصار.
-- لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.
-- لا تذكر للمُرسل تفاصيل تقنية عن الذكاء الاصطناعي أو API.`
-  ].filter(Boolean).join("\n\n");
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY
-      },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: dynamicPrompt }] },
-        contents,
-        generationConfig: {
-          maxOutputTokens: 700,
-          temperature: 0.7
-        }
-      })
-    }
-  );
-
-  const data = await response.json();
-  if (!response.ok) throw new Error(`Gemini ${response.status}: ${JSON.stringify(data)}`);
-
-  const reply = data?.candidates?.[0]?.content?.parts
-    ?.map((part) => part?.text || "")
-    .join("")
-    .trim();
-
-  if (!reply) throw new Error("Gemini returned an empty reply.");
-  return reply;
+  throw lastError || new Error("Gemini request failed.");  return reply;
 }
 
 function isGroup(jid) {
