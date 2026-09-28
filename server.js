@@ -331,8 +331,9 @@ function learnProfile(jid, text) {
   const v = String(text || "").trim();
   if (!v) return;
   const p = profileMemory.get(jid) || {};
+  if (/^(?:انا|أنا)\s+سعيد$/i.test(v)) p.name = "سعيد";
   const patterns = [
-    [/^(?:انا|أنا)\s+(?:اسمي|إسمي)\s+(.{1,60})$/i, "name"],
+    [/^(?:انا|أنا)\s+(?:اسمي|إسمي|سعيد)\s+(.{1,60})$/i, "name"],
     [/^(?:انا|أنا)\s+(?:من|في)\s+(.{1,60})$/i, "location"],
     [/^(?:انا|أنا)\s+(?:شغال|بشتغل|شغلي)\s+(?:في|كـ|ك|هو)?\s*(.{1,80})$/i, "work"],
     [/^(?:انا|أنا)\s+(?:بحب|بحب جدًا|بحب جدا)\s+(.{1,100})$/i, "likes"],
@@ -682,7 +683,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
   for (const model of models) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
@@ -695,7 +696,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: dynamicPrompt }] },
             contents,
-            generationConfig: { maxOutputTokens: 700, temperature: 0.7 }
+            generationConfig: { maxOutputTokens: 350, temperature: 0.55 }
           })
         }
       );
@@ -724,7 +725,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
       console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
-      console.error(`⚠️ Gemini request error: ${model} → ${error.name === "AbortError" ? "timeout 12s" : error.message}`);
+      console.error(`⚠️ Gemini request error: ${model} → ${error.name === "AbortError" ? "timeout 25s" : error.message}`);
     }
   }
 
