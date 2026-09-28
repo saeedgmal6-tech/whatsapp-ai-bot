@@ -552,7 +552,9 @@ async function askAI(jid, incomingText, media = null, personName = "") {
   ].filter(Boolean).join("\n\n");
 
   const models = [];
-  for (const model of [GEMINI_MODEL, GEMINI_FALLBACK_MODEL, ...GEMINI_EXTRA_FALLBACK_MODELS]) {
+  // 3.8 is currently the fastest reliable route for this bot; keep older
+  // configured models only as fallbacks so a temporary 503 does not add latency.
+  for (const model of ["gemini-3.8-flash", "gemini-2.5-flash", GEMINI_MODEL, GEMINI_FALLBACK_MODEL, ...GEMINI_EXTRA_FALLBACK_MODELS]) {
     if (model && !models.includes(model)) models.push(model);
   }
 
