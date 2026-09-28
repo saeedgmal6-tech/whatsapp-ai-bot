@@ -694,7 +694,8 @@ function looksSensitive(text){
   return ["تحويل","فلوس","حساب بنكي","حساب بنكى","iban","bank","دفع","ادفع","قرض","شيك","اتفاق","عقد","موعد","قابلني","نتقابل","مقابلة","مشكلة كبيرة","خلاف","سر","مهم جدًا","مهم جدا","ضروري","مستعجل","اتصل بيا","كلمني","كلّمني","محتاجك","عايزك ضروري","قرار","موافقة"].some(x=>v.includes(x));
 }
 function escalationReason(text,mediaInfo=null){
-  if(isVoiceRequest(text))return "";\n  if(looksSensitive(text))return "الرسالة فيها موضوع حساس أو محتاج قرار منك.";
+  if(isVoiceRequest(text))return "";
+  if(looksSensitive(text))return "الرسالة فيها موضوع حساس أو محتاج قرار منك.";
   if(mediaInfo?.label==="ملف"&&/pdf|doc|xls|xlsx/i.test(mediaInfo.fileName||""))return "وصل ملف ممكن يكون محتاج مراجعتك.";
   return "";
 }
