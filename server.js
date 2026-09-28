@@ -324,6 +324,19 @@ function getNameContext(jid, personName) {
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
 }
 
+function fallbackReply(request) {
+  const v = String(request || "").trim();
+  if (!v) return "آه معاك يا عم، قول.";
+  if (/(انت فين|إنت فين|فينك|فين يا سليم)/i.test(v)) return "موجود يا عم، معاك أهو.";
+  if (/^(يا عم|يا سليم|سليم)$/i.test(v)) return "أيوه يا عم، معاك.";
+  if (/(اخبارك|أخبارك|عامل إيه|عامل ايه|إزيك|ازيك)/i.test(v)) return "أنا تمام يا عم، إنت عامل إيه؟";
+  if (/(صباح الخير)/i.test(v)) return "صباح الخير يا عم، عامل إيه؟";
+  if (/(مساء الخير)/i.test(v)) return "مساء الخير يا عم، عامل إيه؟";
+  if (/(تصبح على خير|تصبح علي خير)/i.test(v)) return "تصبح على خير يا عم، ونوم هادي.";
+  if (/(سلام|باي|مع السلامة|مع السلامه)/i.test(v)) return "مع السلامة يا عم، خليك بخير.";
+  return "أيوه يا عم، معاك. قولّي عايز إيه؟";
+}
+
 function voiceFallbackText(request) {
   const v = String(request || "").trim();
   if (!v) return "أهلاً يا عم، إزيك؟";
@@ -567,11 +580,12 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.`
   ].filter(Boolean).join("\n\n");
 
-  const models = [GEMINI_MODEL];
+  const models = [GEMINI_MODEL, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
 
   let lastError = null;
 
   for (const model of models) {
+    if (lastError?.status === 429) await sleep(1200);
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -608,6 +622,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
       }
 
       lastError = new Error(`Gemini ${response.status} (${model}): ${JSON.stringify(data)}`);
+      lastError.status = response.status;
       console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
@@ -932,7 +947,7 @@ async function processBatch(sock, messages) {
     let reply;
     try {
       try { reply = await askAI(jid,aiRequestText,media,personName); }
-      catch (error) { reply = wantsVoice ? voiceFallbackText(aiRequestText) : "آه معاك يا عم، قول."; console.error("⚠️ Gemini unavailable; fallback reply used."); }
+      catch (error) { reply = wantsVoice ? voiceFallbackText(aiRequestText) : fallbackReply(aiRequestText || text); console.error("⚠️ Gemini unavailable; fallback reply used."); }
       if (wantsVoice) {
         const voiceBuffer = await createVoiceNote(reply);
         const sentVoice = await sock.sendMessage(jid, {
