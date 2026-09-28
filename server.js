@@ -10,12 +10,16 @@ import makeWASocket, {
 import { NodeCache } from "@cacheable/node-cache";
 import pino from "pino";
 import fs from "fs";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import os from "os";
+import path from "path";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.7-flash";
-const GEMINI_EXTRA_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-2.5-flash"];
+const GEMINI_EXTRA_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-2.5-flash"];\nconst GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";\nconst GEMINI_TTS_FALLBACK_MODEL = process.env.GEMINI_TTS_FALLBACK_MODEL || "gemini-2.5-flash-preview-tts";\nconst GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
 const BUILD_ID = "smart-replies-no-images-2026-09-26-v1";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
@@ -315,6 +319,113 @@ function getNameContext(jid, personName) {
     return `اسم الشخص كما هو محفوظ في جهات اتصال صاحب الرقم: "${personName}". هذا الاسم معلومة داخلية فقط للتعرّف على الشخص وربط المحادثة. ممنوع كتابة الاسم أو مناداة الشخص به في الرد، إلا إذا طلب هو صراحةً أن تناديه باسمه.`;
   }
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
+}
+
+function isVoiceRequest(text) {
+  const v = String(text || "").trim().toLowerCase();
+  const asksForVoice = /(ابعتلي|ابعت لي|ابعتهالي|ابعتهالى|ابعثلي|ابعث لي|رد عليا|رد علي|كلمني|كلّمني|قولي|قولّي|بعتلي|بعت لي|عايز.*فويس|عايز.*صوت)/i.test(v);
+  const hasVoiceWord = /(فويس|ڤويس|رسالة صوتية|صوت)/i.test(v);
+  return asksForVoice && hasVoiceWord;
+}
+
+function stripVoiceRequest(text) {
+  return String(text || "")
+    .replace(/(?:ابعتلي|ابعت لي|ابعتهالي|ابعتهالى|ابعثلي|ابعث لي|رد عليا|رد علي|كلمني|كلّمني|قولي|قولّي|بعتلي|بعت لي)\s*(?:فويس|ڤويس|رسالة صوتية|صوت)/ig, "")
+    .replace(/^(?:عايز|عايزة)\s*(?:فويس|ڤويس|رسالة صوتية|صوت)\s*/i, "")
+    .trim();
+}
+
+async function generateVoiceNote(text) {
+  const cleanText = String(text || "").trim().slice(0, 2500);
+  if (!cleanText) throw new Error("لا يوجد نص لتحويله إلى فويس.");
+
+  const models = [GEMINI_TTS_MODEL, GEMINI_TTS_FALLBACK_MODEL].filter((m, i, a) => m && a.indexOf(m) === i);
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+          },
+          body: JSON.stringify({
+            contents: [{
+              role: "user",
+              parts: [{
+                text: cleanText,
+                speech_metadata: {
+                  style: "natural Egyptian Arabic, casual WhatsApp voice note, conversational, warm, not robotic, normal speaking pace"
+                }
+              }]
+            }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                languageCode: "ar-XA",
+                voiceConfig: {
+                  voice: GEMINI_TTS_VOICE
+                }
+              }
+            }
+          })
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(`Gemini TTS ${response.status} (${model}): ${JSON.stringify(data)}`);
+      }
+
+      const audioBase64 =
+        data?.candidates?.[0]?.content?.parts?.find((part) => part?.inlineData?.data)?.inlineData?.data;
+
+      if (!audioBase64) throw new Error(`Gemini TTS returned no audio (${model}).`);
+
+      return Buffer.from(audioBase64, "base64");
+    } catch (error) {
+      lastError = error;
+      console.error(`⚠️ Gemini TTS failed: ${model} → ${error?.message || error}`);
+    }
+  }
+
+  throw lastError || new Error("Gemini TTS failed.");
+}
+
+const execFileAsync = promisify(execFile);
+
+async function convertWavToOggOpus(wavBuffer) {
+  const id = `salim-voice-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const wavPath = path.join(os.tmpdir(), `${id}.wav`);
+  const oggPath = path.join(os.tmpdir(), `${id}.ogg`);
+
+  try {
+    fs.writeFileSync(wavPath, wavBuffer);
+    await execFileAsync("ffmpeg", [
+      "-y",
+      "-i", wavPath,
+      "-ar", "48000",
+      "-ac", "1",
+      "-c:a", "libopus",
+      "-b:a", "48k",
+      "-application", "voip",
+      "-avoid_negative_ts", "make_zero",
+      "-f", "ogg",
+      oggPath
+    ]);
+    return fs.readFileSync(oggPath);
+  } finally {
+    try { fs.unlinkSync(wavPath); } catch {}
+    try { fs.unlinkSync(oggPath); } catch {}
+  }
+}
+
+async function createVoiceNote(text) {
+  const wav = await generateVoiceNote(text);
+  return convertWavToOggOpus(wav);
 }
 
 function isExcelRequest(text) {
@@ -776,6 +887,8 @@ async function processBatch(sock, messages) {
 
     const text = textParts.join("\n").trim();
     const mediaInfo = mediaMessage ? getMediaInfo(mediaMessage) : null;
+    const wantsVoice = isVoiceRequest(text);
+    const aiRequestText = wantsVoice ? stripVoiceRequest(text) : text;
 
     if (!text && !mediaInfo) return;
 
@@ -810,7 +923,17 @@ async function processBatch(sock, messages) {
     const stopTyping = await startTyping(sock, jid);
     let reply;
     try {
-      reply = await askAI(jid,text,media,personName);
+      reply = await askAI(jid,aiRequestText,media,personName);
+      if (wantsVoice) {
+        const voiceBuffer = await createVoiceNote(reply);
+        const sentVoice = await sock.sendMessage(jid, {
+          audio: voiceBuffer,
+          mimetype: "audio/ogg; codecs=opus",
+          ptt: true
+        });
+        rememberSentMessage(sentVoice);
+        console.log(`🎙️ تم إرسال فويس إلى WhatsApp: ${sentVoice?.key?.id || "unknown"}`);
+      }
     } finally {
       await stopTyping();
     }
@@ -820,7 +943,9 @@ async function processBatch(sock, messages) {
     if(reason)needsHuman=true;
     if(needsHuman){await notifyOwner(sock,jid,reason||"الموضوع محتاج تدخلك.",text);if(!reply)reply="تمام، هراجع الموضوع وأرد عليك.";}
     console.log(`📤 reply: ${reply}`);
-    const sent=await sendReply(sock,jid,reply,text,!!media);
+    const sent = wantsVoice
+      ? recentBotSends.get(jid) ? { key: { id: recentBotSends.get(jid).id } } : { key: { id: "voice" } }
+      : await sendReply(sock,jid,reply,text,!!media);
     const historyText = media
       ? `[رسالة ${media.label}${media.fileName ? `: ${media.fileName}` : ""}]${text ? ` ${text}` : ""}`
       : text;
