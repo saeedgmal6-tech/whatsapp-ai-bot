@@ -580,12 +580,12 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.`
   ].filter(Boolean).join("\n\n");
 
-  const models = [GEMINI_MODEL, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
+  const models = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", GEMINI_MODEL];
 
   let lastError = null;
 
   for (const model of models) {
-    if (lastError?.status === 429) await sleep(1200);
+    if (lastError?.status === 429) await sleep(3500);
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -612,7 +612,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
           .trim();
 
         if (reply) {
-          if (model !== GEMINI_MODEL) console.log(`🔁 Gemini fallback succeeded: ${model}`);
+          console.log(`✅ Gemini reply succeeded: ${model}`);
           return reply;
         }
 
@@ -623,6 +623,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 
       lastError = new Error(`Gemini ${response.status} (${model}): ${JSON.stringify(data)}`);
       lastError.status = response.status;
+      if (response.status === 429) console.error(`⏳ Gemini rate limit — switching model after 3.5s: ${model}`);
       console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
