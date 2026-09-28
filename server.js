@@ -596,18 +596,10 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.`
   ].filter(Boolean).join("\n\n");
 
-  const models = [
-    GEMINI_MODEL,
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-    "gemma-4-31b-it",
-    "gemma-4-26b-a4b-it"
-  ].filter((m, i, a) => m && a.indexOf(m) === i);
+  // Use the only model confirmed working with this API key/project.
+  // The previous Flash models were repeatedly rate-limited (429/503), while
+  // gemma-4-26b-a4b-it returned successful responses.
+  const models = ["gemma-4-26b-a4b-it"];
 
   let lastError = null;
 
