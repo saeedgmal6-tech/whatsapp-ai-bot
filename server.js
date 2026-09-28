@@ -108,6 +108,7 @@ if (!GEMINI_API_KEY) {
 const logger = pino({ level: "silent" });
 const histories = new Map();
 const contactNames = new Map();
+const profileMemory = new Map();
 const manualTakeover = new Map();
 const pendingBatches = new Map();
 const notifiedEscalations = new Map();
@@ -128,6 +129,7 @@ function loadMemories() {
       if (!value || typeof value !== "object") continue;
       histories.set(jid, Array.isArray(value.history) ? value.history.slice(-MAX_MEMORY_MESSAGES) : []);
       if (value.name) contactNames.set(jid, String(value.name));
+      if (value.profile && typeof value.profile === "object") profileMemory.set(jid, value.profile);
     }
     console.log(`🧠 تم تحميل ذاكرة ${histories.size} محادثة.`);
   } catch (error) {
@@ -141,7 +143,8 @@ function saveMemories() {
     for (const [jid, history] of histories.entries()) {
       data[jid] = {
         name: contactNames.get(jid) || "",
-        history: history.slice(-MAX_MEMORY_MESSAGES)
+        history: history.slice(-MAX_MEMORY_MESSAGES),
+        profile: profileMemory.get(jid) || {}
       };
     }
     fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf8");
@@ -322,6 +325,78 @@ function getNameContext(jid, personName) {
     return `اسم الشخص كما هو محفوظ في جهات اتصال صاحب الرقم: "${personName}". هذا الاسم معلومة داخلية فقط للتعرّف على الشخص وربط المحادثة. ممنوع كتابة الاسم أو مناداة الشخص به في الرد، إلا إذا طلب هو صراحةً أن تناديه باسمه.`;
   }
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
+}
+
+function learnProfile(jid, text) {
+  const v = String(text || "").trim();
+  if (!v) return;
+  const p = profileMemory.get(jid) || {};
+  const patterns = [
+    [/^(?:انا|أنا)\s+(?:اسمي|إسمي)\s+(.{1,60})$/i, "name"],
+    [/^(?:انا|أنا)\s+(?:من|في)\s+(.{1,60})$/i, "location"],
+    [/^(?:انا|أنا)\s+(?:شغال|بشتغل|شغلي)\s+(?:في|كـ|ك|هو)?\s*(.{1,80})$/i, "work"],
+    [/^(?:انا|أنا)\s+(?:بحب|بحب جدًا|بحب جدا)\s+(.{1,100})$/i, "likes"],
+    [/^(?:انا|أنا)\s+(?:بكره|مش بحب)\s+(.{1,100})$/i, "dislikes"],
+    [/^(?:عندي)\s+(?:سن|سني|عمري)\s+(\d{1,3})\s*(?:سنة|عام)?$/i, "age"]
+  ];
+  for (const [re, key] of patterns) {
+    const m = v.match(re);
+    if (m?.[1]) {
+      const value = m[1].trim();
+      if (value) p[key] = value;
+      break;
+    }
+  }
+  p.updatedAt = Date.now();
+  profileMemory.set(jid, p);
+}
+
+function getProfileContext(jid) {
+  const p = profileMemory.get(jid);
+  if (!p) return "";
+  const lines = Object.entries(p)
+    .filter(([k, v]) => k !== "updatedAt" && v)
+    .map(([k, v]) => "- " + k + ": " + v);
+  return lines.length ? "معلومات متعلمة من كلام الشخص نفسه فقط، استخدمها عند الحاجة ولا تخترع غيرها:\n" + lines.join("\n") : "";
+}
+
+function safeMath(expression) {
+  const v = String(expression || "").replace(/,/g, ".").trim();
+  if (!/^[0-9+\-*/().%\s]+$/.test(v) || v.length > 80) return null;
+  try {
+    const result = Function("return (" + v + ")")();
+    return Number.isFinite(result) ? result : null;
+  } catch { return null; }
+}
+
+async function getCairoWeather() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const url = "https://api.open-meteo.com/v1/forecast?latitude=30.0444&longitude=31.2357&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=Africa%2FCairo";
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error("weather " + response.status);
+    const data = await response.json();
+    const current = data?.current;
+    if (!current || typeof current.temperature_2m !== "number") throw new Error("weather data missing");
+    return { temperature: current.temperature_2m, feelsLike: current.apparent_temperature, wind: current.wind_speed_10m, code: current.weather_code };
+  } finally { clearTimeout(timer); }
+}
+
+function weatherDescription(code) {
+  const map = {0:"الجو صافي",1:"صافي غالبًا",2:"غائم جزئيًا",3:"غائم",45:"شبورة",48:"شبورة",51:"رذاذ خفيف",53:"رذاذ",55:"رذاذ كثيف",61:"مطر خفيف",63:"مطر",65:"مطر غزير",80:"زخات مطر",81:"زخات مطر",82:"زخات مطر قوية",95:"عاصفة رعدية",96:"عاصفة رعدية مع برد",99:"عاصفة رعدية مع برد"};
+  return map[code] || "الجو متغير";
+}
+
+function localUtilityReply(text) {
+  const v = String(text || "").trim();
+  if (/(درجة الحرارة|الحرارة|الجو عامل|الطقس|الجو دلوقتي|الجو النهارده)/i.test(v)) return "WEATHER";
+  const mathMatch = v.match(/^(?:احسب|حساب|كام)\s+([0-9+\-*/().%\s]+)$/i);
+  if (mathMatch) {
+    const result = safeMath(mathMatch[1]);
+    if (result !== null) return String(result);
+  }
+  return null;
 }
 
 function fallbackReply(request) {
@@ -569,6 +644,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
     CONFIG.systemPrompt || "",
     getNameContext(jid, personName),
     getSpecialPersonPrompt(jid, personName),
+    getProfileContext(jid),
     `هوية الشخص الذي تتحدث معه:
 - الاسم المتاح للشخص: ${personName || "غير متاح"}.
 - استخدم الاسم داخليًا للتعرّف على الشخص وربط سياق المحادثة، لكن لا تنادِ الشخص به إلا إذا طلب ذلك صراحةً.
@@ -936,6 +1012,37 @@ async function processBatch(sock, messages) {
     const aiRequestText = wantsVoice ? stripVoiceRequest(text) : text;
 
     if (!text && !mediaInfo) return;
+
+    learnProfile(jid, text);
+
+    const utility = localUtilityReply(text);
+    if (utility && utility !== "WEATHER") {
+      const stopTyping = await startTyping(sock, jid);
+      try {
+        await sendReply(sock, jid, utility, text, false);
+        addHistory(jid, "user", text);
+        addHistory(jid, "assistant", utility);
+        return;
+      } finally {
+        await stopTyping();
+      }
+    }
+
+    if (utility === "WEATHER") {
+      const stopTyping = await startTyping(sock, jid);
+      try {
+        const weather = await getCairoWeather();
+        const weatherReply = "دلوقتي في القاهرة حوالي " + weather.temperature + "°، والمحسوس " + weather.feelsLike + "°. " + weatherDescription(weather.code) + " والرياح حوالي " + weather.wind + " كم/س.";
+        await sendReply(sock, jid, weatherReply, text, false);
+        addHistory(jid, "user", text);
+        addHistory(jid, "assistant", weatherReply);
+        return;
+      } catch (error) {
+        console.error("⚠️ Weather service failed:", error.message);
+      } finally {
+        await stopTyping();
+      }
+    }
 
     if (personName) console.log(`👤 الشخص: ${personName}`);
     if (text) console.log(`📩 incoming: ${text}`);
