@@ -13,9 +13,9 @@ import fs from "fs";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.7-flash";
-const GEMINI_EXTRA_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
+const GEMINI_EXTRA_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const BOT_NAME = process.env.BOT_NAME || "سليم";
 const BUILD_ID = "smart-replies-no-images-2026-09-26-v1";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
@@ -25,7 +25,7 @@ const CONFIG_FILE = process.env.CONFIG_FILE || "./bot_config.json";
 const MAX_MEMORY_MESSAGES = 60;
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 const MANUAL_TAKEOVER_MS = 10 * 60 * 1000;
-const BATCH_WINDOW_MS = 1800;
+const BATCH_WINDOW_MS = 500;
 const SMART_DELAY_MAX_MS = 6500;
 const OWNER_ALERT_JID = process.env.OWNER_ALERT_JID || "201555969921@s.whatsapp.net";
 const DND_START = process.env.DND_START || "";
@@ -34,8 +34,8 @@ const ESCALATION_ENABLED = process.env.ESCALATION_ENABLED !== "false";
 
 const DEFAULT_CONFIG = {
   enabled: true,
-  replyDelayMinMs: 700,
-  replyDelayMaxMs: 2200,
+  replyDelayMinMs: 0,
+  replyDelayMaxMs: 0,
   manualTakeoverMinutes: 10,
   dndStart: DND_START,
   dndEnd: DND_END,
@@ -88,7 +88,7 @@ const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
 - لا تدّعي إنك إنسان لو اتسألت مباشرة، لكن في المحادثة العادية اكتب بطريقة بشرية طبيعية.
 - الرد فقط على الرسالة الواردة، ومن غير مقدمات أو خاتمة مصطنعة.
 
-أهم قاعدة: اقرأ الرسالة والسياق، وبعدها اكتب أول رد طبيعي ممكن شخص مصري يكتبه فعلًا على WhatsApp. متحاولش تستعرض أو تبالغ في الذكاء أو الرسمية. الطبيعي والبساطة أهم من البلاغة.`;
+أهم قاعدة: اقرأ الرسالة والسياق، وبعدها اكتب أول رد طبيعي ممكن شخص مصري يكتبه فعلًا على WhatsApp. متحاولش تستعرض أو تبالغ في الذكاء أو الرسمية. الطبيعي والبساطة أهم من البلاغة.\n- ممنوع أسلوب خدمة العملاء أو الردود الآلية مثل: "بالتأكيد، يسعدني مساعدتك" أو "كيف يمكنني مساعدتك اليوم؟" إلا إذا كان السياق يفرضها.\n- لا تشرح أنك مساعد أو تكرر اسمك إلا عندما يُسأل عن هويتك.\n- خلي الرد كأنه رسالة واتساب عادية: جملة أو جملتين غالبًا، وبنفس عفوية الشخص اللي قدامك.`;
 if (!PHONE_NUMBER) {
   console.error("ERROR: ضع PHONE_NUMBER بدون + أو مسافات.");
   process.exit(1);
@@ -445,7 +445,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
   let lastError = null;
 
   for (const model of models) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
       try {
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -631,13 +631,24 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function showTyping(sock, jid, duration) {
+async function startTyping(sock, jid) {
   try {
     await sock.presenceSubscribe(jid);
     await sock.sendPresenceUpdate("composing", jid);
-    await sleep(duration);
-    await sock.sendPresenceUpdate("paused", jid);
   } catch {}
+  const timer = setInterval(async () => {
+    try { await sock.sendPresenceUpdate("composing", jid); } catch {}
+  }, 2500);
+  return async () => {
+    clearInterval(timer);
+    try { await sock.sendPresenceUpdate("paused", jid); } catch {}
+  };
+}
+
+async function showTyping(sock, jid, duration) {
+  const stopTyping = await startTyping(sock, jid);
+  await sleep(duration);
+  await stopTyping();
 }
 
 function takeoverActive(jid) {
@@ -742,9 +753,10 @@ async function handleOwnerCommand(sock, jid, text) {
 
 async function sendReply(sock, jid, reply, sourceText="", hasMedia=false) {
   const delay=randomDelay(sourceText,hasMedia);
-  await showTyping(sock,jid,Math.min(delay,3500));
+  if (delay > 0) await sleep(delay);
   const sent = await sock.sendMessage(jid, { text: reply });
   rememberSentMessage(sent);
+  try { await sock.sendPresenceUpdate("paused", jid); } catch {}
   return sent;
 }
 
@@ -801,7 +813,13 @@ async function processBatch(sock, messages) {
       if (!media) return;
     }
 
-    let reply=await askAI(jid,text,media,personName);
+    const stopTyping = await startTyping(sock, jid);
+    let reply;
+    try {
+      reply = await askAI(jid,text,media,personName);
+    } finally {
+      await stopTyping();
+    }
     let needsHuman=false;
     if(reply.includes("[NEEDS_HUMAN]")){needsHuman=true;reply=reply.replace(/\[NEEDS_HUMAN\]/g,"").trim();}
     const reason=escalationReason(text,mediaInfo);
