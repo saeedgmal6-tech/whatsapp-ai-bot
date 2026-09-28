@@ -24,7 +24,7 @@ const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 const GEMINI_TTS_FALLBACK_MODEL = process.env.GEMINI_TTS_FALLBACK_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const BUILD_ID = "registered-contact-name-awareness-v2-identity-direct-2026-09-28";
+const BUILD_ID = "registered-contact-name-and-profile-direct-v3-2026-09-28";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -397,6 +397,36 @@ async function getCairoWeather() {
 function weatherDescription(code) {
   const map = {0:"الجو صافي",1:"صافي غالبًا",2:"غائم جزئيًا",3:"غائم",45:"شبورة",48:"شبورة",51:"رذاذ خفيف",53:"رذاذ",55:"رذاذ كثيف",61:"مطر خفيف",63:"مطر",65:"مطر غزير",80:"زخات مطر",81:"زخات مطر",82:"زخات مطر قوية",95:"عاصفة رعدية",96:"عاصفة رعدية مع برد",99:"عاصفة رعدية مع برد"};
   return map[code] || "الجو متغير";
+}
+
+function isProfileQuestion(text) {
+  const v = String(text || "").trim().replace(/[؟?!.،]+$/g, "");
+  return /^(?:انا بحب ايه|أنا بحب إيه|انا بكره ايه|أنا بكره إيه|انا اسمي ايه|أنا اسمي إيه|اسمي ايه|اسمي إيه|انا شغال فين|أنا شغال فين|انا منين|أنا منين|عندي كام سنة|أنا عندي كام سنة)$/i.test(v);
+}
+
+function getProfileAnswer(jid, text) {
+  const p = profileMemory.get(jid) || {};
+  const v = String(text || "").trim();
+
+  if (/^(?:انا بحب ايه|أنا بحب إيه)$/i.test(v)) {
+    return p.likes ? "إنت قلت إنك بتحب " + p.likes + "." : "";
+  }
+  if (/^(?:انا بكره ايه|أنا بكره إيه)$/i.test(v)) {
+    return p.dislikes ? "إنت قلت إنك مش بتحب " + p.dislikes + "." : "";
+  }
+  if (/^(?:انا اسمي ايه|أنا اسمي إيه|اسمي ايه|اسمي إيه)$/i.test(v)) {
+    return p.name ? "إنت قلت إن اسمك " + p.name + "." : "";
+  }
+  if (/^(?:انا شغال فين|أنا شغال فين)$/i.test(v)) {
+    return p.work ? "إنت قلت إنك شغال " + p.work + "." : "";
+  }
+  if (/^(?:انا منين|أنا منين)$/i.test(v)) {
+    return p.location ? "إنت قلت إنك من " + p.location + "." : "";
+  }
+  if (/^(?:عندي كام سنة|أنا عندي كام سنة)$/i.test(v)) {
+    return p.age ? "إنت قلت إن سنك " + p.age + " سنة." : "";
+  }
+  return "";
 }
 
 function isIdentityQuestion(text) {
@@ -1055,6 +1085,19 @@ async function processBatch(sock, messages) {
     learnProfile(jid, text);
 
     const identityReply = isIdentityQuestion(text) ? getIdentityReply(jid, personName) : "";
+    const profileReply = isProfileQuestion(text) ? getProfileAnswer(jid, text) : "";
+    if (profileReply) {
+      const stopTyping = await startTyping(sock, jid);
+      try {
+        await sendReply(sock, jid, profileReply, text, false);
+        addHistory(jid, "user", text);
+        addHistory(jid, "assistant", profileReply);
+        console.log(`🧠 profile reply: ${profileReply}`);
+        return;
+      } finally {
+        await stopTyping();
+      }
+    }
     if (identityReply) {
       const stopTyping = await startTyping(sock, jid);
       try {
