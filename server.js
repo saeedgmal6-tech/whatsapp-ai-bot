@@ -1043,10 +1043,6 @@ startWhatsApp().catch((error) => {
   return reply;
 }
 
-function isGroup(jid) {
-  return String(jid || "").endsWith("@g.us");
-}
-
 function isIgnored(jid) {
   if (CONFIG.ignoredJids?.includes(jid) || CONFIG.ignoredJids?.includes(normalizeJid(jid))) return true;
   if (isGroup(jid) && CONFIG.ignoredGroups?.includes(jid)) return true;
