@@ -24,7 +24,7 @@ const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 const GEMINI_TTS_FALLBACK_MODEL = process.env.GEMINI_TTS_FALLBACK_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const BUILD_ID = "registered-contact-name-awareness-v1-2026-09-28";
+const BUILD_ID = "registered-contact-name-awareness-v2-identity-direct-2026-09-28";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -397,6 +397,23 @@ async function getCairoWeather() {
 function weatherDescription(code) {
   const map = {0:"الجو صافي",1:"صافي غالبًا",2:"غائم جزئيًا",3:"غائم",45:"شبورة",48:"شبورة",51:"رذاذ خفيف",53:"رذاذ",55:"رذاذ كثيف",61:"مطر خفيف",63:"مطر",65:"مطر غزير",80:"زخات مطر",81:"زخات مطر",82:"زخات مطر قوية",95:"عاصفة رعدية",96:"عاصفة رعدية مع برد",99:"عاصفة رعدية مع برد"};
   return map[code] || "الجو متغير";
+}
+
+function isIdentityQuestion(text) {
+  const v = String(text || "").trim().replace(/[؟?!.]+$/g, "");
+  return /^(?:انا مين|أنا مين|عارف انا مين|عارف أنا مين|فاكر انا مين|فاكر أنا مين|فاكر اسمي|فاكر إسمي|اسمي ايه|اسمي إيه|إسمي ايه|إسمي إيه|مين انا|مين أنا)$/i.test(v);
+}
+
+function getIdentityReply(jid, personName) {
+  const p = profileMemory.get(jid) || {};
+  const selfName = String(p.name || "").trim();
+  const contactName = String(personName || "").trim();
+
+  // For explicit identity questions, prefer the name the person told the bot,
+  // then the registered WhatsApp contact name. Never ask Gemini to infer this.
+  if (selfName) return "أيوه، إنت " + selfName + ".";
+  if (contactName) return "أيوه، إنت " + contactName + ".";
+  return "";
 }
 
 function localUtilityReply(text) {
@@ -1036,6 +1053,20 @@ async function processBatch(sock, messages) {
     if (!text && !mediaInfo) return;
 
     learnProfile(jid, text);
+
+    const identityReply = isIdentityQuestion(text) ? getIdentityReply(jid, personName) : "";
+    if (identityReply) {
+      const stopTyping = await startTyping(sock, jid);
+      try {
+        await sendReply(sock, jid, identityReply, text, false);
+        addHistory(jid, "user", text);
+        addHistory(jid, "assistant", identityReply);
+        console.log(`📛 identity reply: ${identityReply}`);
+        return;
+      } finally {
+        await stopTyping();
+      }
+    }
 
     const utility = localUtilityReply(text);
     if (utility && utility !== "WEATHER") {
