@@ -350,7 +350,7 @@ function fallbackReply(request) {
       minute: "2-digit"
     }).format(new Date());
   }
-  return "مش قادر أوصل لموديل الرد دلوقتي، فمش هفتي عليك في الإجابة. جرّب الرسالة تاني بعد شوية.";
+  return "مش قادر أوصل لخدمة الذكاء الاصطناعي دلوقتي. جرّب تاني بعد شوية.";
 }
 
 function voiceFallbackText(request) {
@@ -598,10 +598,15 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 
   const models = [
     GEMINI_MODEL,
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-3.7-flash"
+    "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it"
   ].filter((m, i, a) => m && a.indexOf(m) === i);
 
   let lastError = null;
