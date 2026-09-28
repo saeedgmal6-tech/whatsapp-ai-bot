@@ -446,51 +446,45 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 
   for (const model of models) {
     try {
-      try {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": GEMINI_API_KEY
-            },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: dynamicPrompt }] },
-              contents,
-              generationConfig: { maxOutputTokens: 700, temperature: 0.7 }
-            })
-          }
-        );
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: dynamicPrompt }] },
+            contents,
+            generationConfig: { maxOutputTokens: 700, temperature: 0.7 }
+          })
+        }
+      );
 
-        const data = await response.json();
+      const data = await response.json();
 
-        if (response.ok) {
-          const reply = data?.candidates?.[0]?.content?.parts
-            ?.map((part) => part?.text || "")
-            .join("")
-            .trim();
+      if (response.ok) {
+        const reply = data?.candidates?.[0]?.content?.parts
+          ?.map((part) => part?.text || "")
+          .join("")
+          .trim();
 
-          if (reply) {
-            if (model !== GEMINI_MODEL) console.log(`🔁 Gemini fallback succeeded: ${model}`);
-            return reply;
-          }
-
-          lastError = new Error(`Gemini returned an empty reply from ${model}.`);
-          console.error(`⚠️ Gemini returned empty reply: ${model}`);
-          break;
+        if (reply) {
+          if (model !== GEMINI_MODEL) console.log(`🔁 Gemini fallback succeeded: ${model}`);
+          return reply;
         }
 
-        lastError = new Error(`Gemini ${response.status} (${model}): ${JSON.stringify(data)}`);
-        console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status} (attempt ${attempt}/2)`);
-
-        if (![429, 500, 502, 503, 504].includes(response.status)) break;
-        if (attempt < 2) await sleep(1200);
-      } catch (error) {
-        lastError = error;
-        console.error(`⚠️ Gemini request error: ${model} (attempt ${attempt}/2)`, error);
-        if (attempt < 2) await sleep(1200);
+        lastError = new Error(`Gemini returned an empty reply from ${model}.`);
+        console.error(`⚠️ Gemini returned empty reply: ${model}`);
+        continue;
       }
+
+      lastError = new Error(`Gemini ${response.status} (${model}): ${JSON.stringify(data)}`);
+      console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      console.error(`⚠️ Gemini request error: ${model}`, error);
     }
   }
 
