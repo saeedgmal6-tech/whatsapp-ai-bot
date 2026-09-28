@@ -17,7 +17,7 @@ import path from "path";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const GEMINI_MODEL = "gemini-3.8-flash";
 const GEMINI_FALLBACK_MODEL = "";
 const GEMINI_EXTRA_FALLBACK_MODELS = [];
 const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
@@ -322,6 +322,31 @@ function getNameContext(jid, personName) {
     return `اسم الشخص كما هو محفوظ في جهات اتصال صاحب الرقم: "${personName}". هذا الاسم معلومة داخلية فقط للتعرّف على الشخص وربط المحادثة. ممنوع كتابة الاسم أو مناداة الشخص به في الرد، إلا إذا طلب هو صراحةً أن تناديه باسمه.`;
   }
   return "اسم الشخص المحفوظ في جهات الاتصال غير متاح؛ لا تخترع اسمًا ولا تحاول مناداة الشخص باسم.";
+}
+
+function voiceFallbackText(request) {
+  const v = String(request || "").trim();
+  if (!v) return "أهلاً يا عم، إزيك؟";
+
+  if (/(سلم|سلام|تحية|حييني|قول سلام)/i.test(v)) {
+    return "أهلاً يا عم، إزيك؟ عامل إيه؟";
+  }
+  if (/(اخبارك|أخبارك|عامل إيه|عامل ايه|إزيك|ازيك)/i.test(v)) {
+    return "أنا تمام يا عم، إنت عامل إيه؟";
+  }
+  if (/(تصبح على خير|تصبح علي خير)/i.test(v)) {
+    return "تصبح على خير يا عم، ونوم هادي.";
+  }
+  if (/(صباح الخير)/i.test(v)) {
+    return "صباح الخير يا عم، يومك جميل إن شاء الله.";
+  }
+  if (/(مساء الخير)/i.test(v)) {
+    return "مساء الخير يا عم.";
+  }
+
+  return v
+    .replace(/^(?:و|وَ)?\s*(?:قولي|قولّي|قول لي|قوللي|احكيلي|احكي لي)\s*/i, "")
+    .trim() || "أهلاً يا عم، إزيك؟";
 }
 
 function isVoiceRequest(text) {
@@ -907,7 +932,7 @@ async function processBatch(sock, messages) {
     let reply;
     try {
       try { reply = await askAI(jid,aiRequestText,media,personName); }
-      catch (error) { reply = wantsVoice ? "أهلاً يا عم، إزيك؟" : "آه معاك يا عم، قول."; console.error("⚠️ Gemini unavailable; fallback reply used."); }
+      catch (error) { reply = wantsVoice ? voiceFallbackText(aiRequestText) : "آه معاك يا عم، قول."; console.error("⚠️ Gemini unavailable; fallback reply used."); }
       if (wantsVoice) {
         const voiceBuffer = await createVoiceNote(reply);
         const sentVoice = await sock.sendMessage(jid, {
