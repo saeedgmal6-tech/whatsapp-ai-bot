@@ -24,7 +24,7 @@ const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 const GEMINI_TTS_FALLBACK_MODEL = process.env.GEMINI_TTS_FALLBACK_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const BUILD_ID = "smart-replies-no-images-2026-09-26-v1";
+const BUILD_ID = "smart-replies-profile-memory-v2-2026-09-28";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -355,10 +355,20 @@ function learnProfile(jid, text) {
 function getProfileContext(jid) {
   const p = profileMemory.get(jid);
   if (!p) return "";
+  const labels = {
+    name: "الاسم الذي قاله الشخص بنفسه",
+    location: "المكان",
+    work: "العمل",
+    likes: "يحب",
+    dislikes: "لا يحب",
+    age: "العمر"
+  };
   const lines = Object.entries(p)
     .filter(([k, v]) => k !== "updatedAt" && v)
-    .map(([k, v]) => "- " + k + ": " + v);
-  return lines.length ? "معلومات متعلمة من كلام الشخص نفسه فقط، استخدمها عند الحاجة ولا تخترع غيرها:\n" + lines.join("\n") : "";
+    .map(([k, v]) => "- " + (labels[k] || k) + ": " + v);
+  return lines.length
+    ? "ملف الشخص — معلومات قالها هو بنفسه فقط. لا تعرض هذه المعلومات من تلقاء نفسك؛ استخدمها فقط عندما تكون مرتبطة بالسؤال أو السياق:\n" + lines.join("\n")
+    : "";
 }
 
 function safeMath(expression) {
@@ -624,10 +634,13 @@ async function buildExcelBuffer(spec) {
 
 async function askAI(jid, incomingText, media = null, personName = "") {
   const history = histories.get(jid) || [];
-  const contents = history.map((item) => ({
+  // Keep long-term memory on disk, but send only a compact recent window to the model.
+  // This reduces latency and keeps the current message more prominent.
+  const compactHistory = history.slice(-12).map((item) => ({
     role: item.role === "assistant" ? "model" : "user",
-    parts: [{ text: item.content }]
+    parts: [{ text: String(item.content || "").slice(-1400) }]
   }));
+  const contents = compactHistory;
 
   const userParts = [];
   if (incomingText) userParts.push({ text: incomingText });
@@ -647,9 +660,13 @@ async function askAI(jid, incomingText, media = null, personName = "") {
     getSpecialPersonPrompt(jid, personName),
     getProfileContext(jid),
     `هوية الشخص الذي تتحدث معه:
-- الاسم المتاح للشخص: ${personName || "غير متاح"}.
-- استخدم الاسم داخليًا للتعرّف على الشخص وربط سياق المحادثة، لكن لا تنادِ الشخص به إلا إذا طلب ذلك صراحةً.
-- ممنوع تخمين اسم أو اختراع معلومات.
+- الاسم المتاح من جهات الاتصال: ${personName || "غير متاح"}.
+- هذا الاسم للاستخدام الداخلي فقط. ممنوع مناداة الشخص به إلا إذا طلب ذلك صراحةً.
+- اسم الشخص الذي يتحدث معك كما قاله هو بنفسه، إن وُجد في ملفه، أهم من اسم جهات الاتصال عند الإجابة عن "أنا مين؟" أو "اسمي إيه؟".
+- لو سأل الشخص عن اسمه، ابحث أولًا في معلوماته المتعلمة من كلامه هو، ثم في سياق المحادثة. لو وُجد اسم صريح مثل "أنا سعيد"، أجب به مباشرة وبثقة.
+- لا تقل "اسمك مش مكتوب عندي" إذا كان الاسم موجودًا في ملف الشخص أو قاله صراحةً من قبل.
+- لا تذكر معلومات أخرى من الملف لمجرد إظهار أنك تتذكرها.
+- لا تخمن اسمًا أو تخترع معلومة.
 
 ذكاء المحادثة:
 - افهم نية الرسالة والسياق قبل الرد، وليس الكلمات حرفيًا فقط.
@@ -658,6 +675,9 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - لو الرسالة تحتمل أكثر من معنى، استخدم السياق أولًا واسأل فقط عند الضرورة.
 - لا تكرر الإجابات الجاهزة. طابق طول الرد مع طول وأهمية الرسالة.
 - حافظ على استمرارية الشخصية والأسلوب عبر المحادثة.
+- ممنوع كشف أو سرد ملف الشخص أو قائمة المعلومات التي تتذكرها. استخدم المعلومة المطلوبة فقط.
+- اكتب الرسالة التي سترسلها فقط. ممنوع تحليل السؤال، أو كتابة "Goal" أو "Context" أو "User's input"، أو شرح طريقة التفكير، أو عرض خيارات داخل الرد.
+- لو السؤال مباشر وله إجابة واضحة، ابدأ بالإجابة مباشرة.
 
 ذاكرة أسلوب الشخص:
 - استخدم الرسائل السابقة لتقدير درجة الرسمية والاختصار والهزار وطريقة الكتابة.
@@ -696,7 +716,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: dynamicPrompt }] },
             contents,
-            generationConfig: { maxOutputTokens: 350, temperature: 0.55 }
+            generationConfig: { maxOutputTokens: 280, temperature: 0.5 }
           })
         }
       );
@@ -1098,241 +1118,3 @@ async function processBatch(sock, messages) {
     if(needsHuman){await notifyOwner(sock,jid,reason||"الموضوع محتاج تدخلك.",text);if(!reply)reply="تمام، هراجع الموضوع وأرد عليك.";}
     console.log(`📤 reply: ${reply}`);
     const sent = wantsVoice
-      ? recentBotSends.get(jid) ? { key: { id: recentBotSends.get(jid).id } } : { key: { id: "voice" } }
-      : await sendReply(sock,jid,reply,text,!!media);
-    const historyText = media
-      ? `[رسالة ${media.label}${media.fileName ? `: ${media.fileName}` : ""}]${text ? ` ${text}` : ""}`
-      : text;
-
-    addHistory(jid, "user", historyText);
-    addHistory(jid, "assistant", reply);
-    console.log(`✅ تم إرسال الرد إلى WhatsApp: ${sent?.key?.id || "unknown"}`);
-  } catch (error) {
-    console.error("Message error:", error);
-    await notifyOwner(sock,jid,"حصل عطل أثناء معالجة الرسالة.","");
-    try {
-      const sent = await sock.sendMessage(jid, { text: "معلش، حصل عطل مؤقت. ابعت الرسالة تاني بعد لحظات." });
-      rememberSentMessage(sent);
-    } catch {}
-  }
-}
-
-function queueMessage(sock, message) {
-  const jid = message?.key?.remoteJid;
-  if (!jid) return;
-
-  const existing = pendingBatches.get(jid);
-  if (existing) {
-    existing.messages.push(message);
-    clearTimeout(existing.timer);
-  } else {
-    pendingBatches.set(jid, { messages: [message], timer: null });
-  }
-
-  const batch = pendingBatches.get(jid);
-  batch.timer = setTimeout(async () => {
-    const current = pendingBatches.get(jid);
-    pendingBatches.delete(jid);
-    await processBatch(sock, current?.messages || []);
-  }, BATCH_WINDOW_MS);
-}
-
-async function processIncomingMessage(sock, message) {
-  try {
-    const key = message?.key;
-    const jid = key?.remoteJid;
-    const id = key?.id;
-
-    console.log(`📨 message: jid=${jid || "unknown"} fromMe=${!!key?.fromMe} stub=${message?.messageStubType || "none"} hasMessage=${!!message?.message}`);
-
-    if (!jid || !id) return;
-
-    if(key?.fromMe){
-      const selfText=extractText(message).trim();
-      if(jid===ownerJid&&await handleOwnerCommand(sock,jid,selfText))return;
-      if(!isRecentBotMessage(message)&&jid!==ownerJid){
-        setTakeover(jid);
-        console.log(`✋ تدخل يدوي: البوت هيسكت مع ${jid} لمدة ${CONFIG.manualTakeoverMinutes} دقيقة.`);
-      } else if (isRecentBotMessage(message)) {
-        console.log(`🤖 رسالة صادرة من البوت، بدون تدخل يدوي: ${jid}`);
-      }
-      return;
-    }
-
-    if (IGNORE_GROUPS && isGroup(jid)) return;
-    if (isIgnored(jid)) return;
-    if (!message?.message) return;
-    await rememberMessageContact(sock, message);
-    if (processedMessages.has(id)) return;
-    rememberProcessed(id);
-
-    if(!botEnabled||CONFIG.enabled===false)return;
-    const incomingText=extractText(message).trim();
-    const incomingMedia=getMediaInfo(message);
-    const localReason=isVoiceRequest(incomingText) ? "" : escalationReason(incomingText,incomingMedia);
-    const text=incomingText;
-
-    if(normalizeJid(jid)===normalizeJid(ownerJid)&&await handleOwnerCommand(sock,jid,text))return;
-    if(isWithinDndHours()){console.log("🌙 وقت عدم الإزعاج: "+jid);return;}
-    if(takeoverActive(jid)){
-      console.log(`⏸️ المحادثة تحت سيطرة صاحب الرقم مؤقتًا: ${jid}`);
-      return;
-    }
-
-    if(localReason)await notifyOwner(sock,jid,localReason,text);
-    queueMessage(sock,message);
-  } catch (error) {
-    console.error("Incoming processing error:", error);
-  }
-}
-
-async function startWhatsApp() {
-  if (starting) return;
-  starting = true;
-
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    console.log("جاري جلب إصدار WhatsApp Web الحالي...");
-    const { version } = await fetchLatestWaWebVersion({});
-    console.log(`WhatsApp Web version: ${version.join(".")}`);
-
-    const sock = makeWASocket({
-      version,
-      auth: state,
-      logger,
-      printQRInTerminal: false,
-      browser: Browsers.ubuntu("Chrome"),
-      markOnlineOnConnect: false,
-      generateHighQualityLinkPreview: false,
-      connectTimeoutMs: 60000,
-      syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false,
-      msgRetryCounterCache,
-      placeholderResendCache,
-      maxMsgRetryCount: 5,
-      retryRequestDelayMs: 250,
-      enableRecentMessageCache: true,
-      enableAutoSessionRecreation: true,
-      getMessage: async (key) => sentMessages.get(key.id)
-    });
-
-    sock.ev.on("creds.update", saveCreds);
-
-    sock.ev.on("contacts.upsert", (contacts) => {
-      for (const contact of contacts || []) rememberContact(contact);
-      console.log(`👥 تم تحديث جهات الاتصال: ${contacts?.length || 0}`);
-    });
-
-    sock.ev.on("contacts.update", (contacts) => {
-      for (const contact of contacts || []) rememberContact(contact);
-    });
-
-    sock.ev.on("lid-mapping.update", async (update) => {
-      try {
-        const entries = Array.isArray(update) ? update : Object.entries(update || {});
-        for (const entry of entries) {
-          const [lid, pn] = Array.isArray(entry) ? entry : [entry?.lid, entry?.pn];
-          if (lid && pn) {
-            const name =
-              contactNames.get(lid) ||
-              contactNames.get(normalizeJid(lid)) ||
-              contactNames.get(pn) ||
-              contactNames.get(normalizeJid(pn)) ||
-              "";
-            if (name) {
-              contactNames.set(lid, name);
-              contactNames.set(normalizeJid(lid), name);
-              contactNames.set(pn, name);
-              contactNames.set(normalizeJid(pn), name);
-            }
-          }
-        }
-        saveMemories();
-      } catch {}
-    });
-
-    sock.ev.on("connection.update", async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (connection === "connecting") console.log("جاري الاتصال بواتساب...");
-
-      if (!state.creds.registered && qr && !pairingRequested) {
-        pairingRequested = true;
-        try {
-          const raw = await sock.requestPairingCode(PHONE_NUMBER);
-          const code = String(raw).replace(/[^A-Za-z0-9]/g, "");
-          console.log("\n==============================");
-          console.log("كود ربط WhatsApp:");
-          console.log(code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code);
-          console.log("==============================\n");
-          console.log("في WhatsApp: الأجهزة المرتبطة > ربط جهاز > الربط برقم الهاتف.");
-        } catch (error) {
-          pairingRequested = false;
-          console.error("فشل إنشاء كود الربط:", error);
-        }
-      }
-
-      if (connection === "open") {
-        ownerJid = normalizeJid(sock.user?.id || "");
-        console.log("✅ WhatsApp متصل. البوت جاهز.");
-        console.log("🌍 ترجمة وفهم الرسائل مفعّلان.");
-        console.log("🗣️ الردود المصرية الطبيعية مفعّلة.");
-        console.log("🧠 الذاكرة + أسلوب كل شخص + الأسماء + الوسائط + الأوامر + typing + تجميع الرسائل مفعّلة.");
-        console.log("🌙 عدم الإزعاج: "+(CONFIG.dndStart||"OFF")+" → "+(CONFIG.dndEnd||"OFF"));
-        console.log("🚨 تنبيهات التدخل: "+(CONFIG.escalationEnabled===false?"OFF":"ON")+" → "+OWNER_ALERT_JID);
-        console.log(`👑 Owner JID: ${ownerJid}`);
-        pairingRequested = false;
-        starting = false;
-      }
-
-      if (connection === "close") {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const loggedOut = statusCode === DisconnectReason.loggedOut;
-        console.log("اتصال WhatsApp اتقفل:", statusCode || "unknown");
-        starting = false;
-
-        if (loggedOut) {
-          console.log("تم تسجيل الخروج. احذف مجلد auth_info ثم شغّل البوت من جديد للربط.");
-          return;
-        }
-
-        console.log("إعادة الاتصال...");
-        setTimeout(() => startWhatsApp().catch(console.error), 2000);
-      }
-    });
-
-    sock.ev.on("messages.upsert", async ({ messages, type, requestId }) => {
-      console.log(`📡 messages.upsert: type=${type || "unknown"} count=${messages?.length || 0}${requestId ? ` requestId=${requestId}` : ""}`);
-      for (const message of messages || []) await processIncomingMessage(sock, message);
-    });
-
-    sock.ev.on("messages.update", async (updates) => {
-      console.log(`🔄 messages.update: count=${updates?.length || 0}`);
-      for (const item of updates || []) {
-        if (!item?.update?.message) continue;
-        const message = { key: item.key, ...item.update };
-        await processIncomingMessage(sock, message);
-      }
-    });
-  } catch (error) {
-    starting = false;
-    throw error;
-  }
-}
-
-console.log("=================================");
-console.log(`${BOT_NAME} — Gemini + WhatsApp`);
-console.log("WhatsApp: Baileys");
-console.log(`AI: ${GEMINI_MODEL}`);
-console.log(`Bot name: ${BOT_NAME}`);
-console.log("Excel generation: ON");
-console.log("Translation: ON");
-console.log("Egyptian style replies: ON");
-console.log("Memory + media + controls: ON");
-console.log(`Build: ${BUILD_ID}`);
-console.log("=================================");
-
-startWhatsApp().catch((error) => {
-  console.error("Startup error:", error);
-  process.exit(1);
-});
