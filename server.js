@@ -396,12 +396,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
   const userParts = [];
   if (incomingText) userParts.push({ text: incomingText });
   if (media?.data && media?.mimeType) {
-    userParts.push({
-      inlineData: {
-        mimeType: media.mimeType,
-        data: media.data
-      }
-    });
+    userParts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
   }
 
   contents.push({
@@ -416,24 +411,20 @@ async function askAI(jid, incomingText, media = null, personName = "") {
     getSpecialPersonPrompt(jid, personName),
     `هوية الشخص الذي تتحدث معه:
 - الاسم المتاح للشخص: ${personName || "غير متاح"}.
-- هذا الاسم جزء أساسي من هوية المحادثة. استخدمه داخليًا لتعرف بالضبط أنت بتكلم مين، واربط به سياق المحادثة والذكريات والتعليمات الخاصة بهذا الشخص.
-- لا تنادِ الشخص باسمه ولا تذكر الاسم في الرد إلا إذا طلب هو ذلك صراحةً.
-- ممنوع تخمين اسم مختلف أو اختراع اسم إذا لم يكن متاحًا.
+- استخدم الاسم داخليًا للتعرّف على الشخص وربط سياق المحادثة، لكن لا تنادِ الشخص به إلا إذا طلب ذلك صراحةً.
+- ممنوع تخمين اسم أو اختراع معلومات.
 
 ذكاء المحادثة:
-- افهم نية الرسالة والسياق قبل صياغة الرد، وليس الكلمات حرفيًا فقط.
-- اربط الرسالة الحالية بالمحادثة السابقة وبالشخص نفسه، واستفد من المعلومات التي قالها سابقًا بدون اختلاق تفاصيل.
+- افهم نية الرسالة والسياق قبل الرد، وليس الكلمات حرفيًا فقط.
+- اربط الرسالة الحالية بالمحادثة السابقة وبالشخص نفسه بدون اختلاق تفاصيل.
 - ميّز بين السؤال والطلب والمزاح والعتاب والقلق والاستعجال، وغيّر أسلوب الرد تبعًا لذلك.
-- لو الرسالة تحتمل أكثر من معنى، استخدم السياق أولًا؛ واسأل فقط عندما يكون السؤال ضروريًا فعلًا لفهم المطلوب.
-- لا توافق تلقائيًا على كل شيء. لو في معلومة غير مؤكدة أو تناقض، وضّح ذلك بهدوء بدل الاختلاق.
-- لا تكرر الإجابات الجاهزة. اجعل كل رد مناسبًا للموقف والشخص.
-- طابق طول الرد مع طول وأهمية الرسالة. لا تحول كل رسالة إلى شرح طويل.
-- حافظ على استمرارية الشخصية والأسلوب عبر المحادثة، وكأنك تعرف هذا الشخص من قبل، من غير ادعاء ذكريات غير موجودة.
+- لو الرسالة تحتمل أكثر من معنى، استخدم السياق أولًا واسأل فقط عند الضرورة.
+- لا تكرر الإجابات الجاهزة. طابق طول الرد مع طول وأهمية الرسالة.
+- حافظ على استمرارية الشخصية والأسلوب عبر المحادثة.
 
 ذاكرة أسلوب الشخص:
 - استخدم الرسائل السابقة لتقدير درجة الرسمية والاختصار والهزار وطريقة الكتابة.
-- طابق أسلوب الشخص الحالي بدون نسخ عباراته أو اختلاق ذكريات ومعلومات.
-- لو أسلوبه تغيّر، اتبع أسلوبه الحالي.
+- طابق أسلوب الشخص الحالي بدون نسخ عباراته أو اختلاق ذكريات.
 
 قواعد الوسائط:
 - فويس نوت أو صوت: افهم الكلام المسموع أولًا ورد على مضمونه.
@@ -442,41 +433,62 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - فيديو: افهم محتواه قدر الإمكان.
 - لا تذكر تفاصيل تقنية عن Gemini أو API أو base64.
 - لو الوسيط غير قابل للقراءة، قل ذلك باختصار.
-- لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.
-- لا تذكر للمُرسل تفاصيل تقنية عن الذكاء الاصطناعي أو API.`
+- لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.`
   ].filter(Boolean).join("\n\n");
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY
-      },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: dynamicPrompt }] },
-        contents,
-        generationConfig: {
-          maxOutputTokens: 700,
-          temperature: 0.7
+  const models = [];
+  for (const model of [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]) {
+    if (model && !models.includes(model)) models.push(model);
+  }
+
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: dynamicPrompt }] },
+            contents,
+            generationConfig: { maxOutputTokens: 700, temperature: 0.7 }
+          })
         }
-      })
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        lastError = new Error(`Gemini ${response.status} (${model}): ${JSON.stringify(data)}`);
+        console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status}`);
+        continue;
+      }
+
+      const reply = data?.candidates?.[0]?.content?.parts
+        ?.map((part) => part?.text || "")
+        .join("")
+        .trim();
+
+      if (reply) {
+        if (model !== GEMINI_MODEL) console.log(`🔁 Gemini fallback succeeded: ${model}`);
+        return reply;
+      }
+
+      lastError = new Error(`Gemini returned an empty reply from ${model}.`);
+      console.error(`⚠️ Gemini returned empty reply: ${model}`);
+    } catch (error) {
+      lastError = error;
+      console.error(`⚠️ Gemini request error: ${model}`, error);
     }
-  );
+  }
 
-  const data = await response.json();
-  if (!response.ok) throw new Error(`Gemini ${response.status}: ${JSON.stringify(data)}`);
-
-  const reply = data?.candidates?.[0]?.content?.parts
-    ?.map((part) => part?.text || "")
-    .join("")
-    .trim();
-
-  if (!reply) throw new Error("Gemini returned an empty reply.");
-  return reply;
+  throw lastError || new Error("All configured Gemini models failed.");
 }
-
 function isGroup(jid) {
   return String(jid || "").endsWith("@g.us");
 }
