@@ -326,15 +326,31 @@ function getNameContext(jid, personName) {
 
 function fallbackReply(request) {
   const v = String(request || "").trim();
-  if (!v) return "آه معاك يا عم، قول.";
-  if (/(انت فين|إنت فين|فينك|فين يا سليم)/i.test(v)) return "موجود يا عم، معاك أهو.";
-  if (/^(يا عم|يا سليم|سليم)$/i.test(v)) return "أيوه يا عم، معاك.";
-  if (/(اخبارك|أخبارك|عامل إيه|عامل ايه|إزيك|ازيك)/i.test(v)) return "أنا تمام يا عم، إنت عامل إيه؟";
-  if (/(صباح الخير)/i.test(v)) return "صباح الخير يا عم، عامل إيه؟";
-  if (/(مساء الخير)/i.test(v)) return "مساء الخير يا عم، عامل إيه؟";
-  if (/(تصبح على خير|تصبح علي خير)/i.test(v)) return "تصبح على خير يا عم، ونوم هادي.";
-  if (/(سلام|باي|مع السلامة|مع السلامه)/i.test(v)) return "مع السلامة يا عم، خليك بخير.";
-  return "أيوه يا عم، معاك. قولّي عايز إيه؟";
+  if (!v) return "آه معاك، قول.";
+  if (/(انت فين|إنت فين|فينك|فين يا سليم)/i.test(v)) return "موجود، معاك أهو.";
+  if (/^(يا عم|يا سليم|سليم)$/i.test(v)) return "أيوه، معاك.";
+  if (/(اخبارك|أخبارك|عامل إيه|عامل ايه|إزيك|ازيك)/i.test(v)) return "أنا تمام، إنت عامل إيه؟";
+  if (/(صباح الخير)/i.test(v)) return "صباح الخير.";
+  if (/(مساء الخير)/i.test(v)) return "مساء الخير.";
+  if (/(تصبح على خير|تصبح علي خير)/i.test(v)) return "تصبح على خير.";
+  if (/(سلام|باي|مع السلامة|مع السلامه)/i.test(v)) return "مع السلامة.";
+  if (/(تاريخ النهاردة|تاريخ النهارده|النهارده كام|النهارده ايه|النهاردة كام|تاريخ اليوم)/i.test(v)) {
+    return new Intl.DateTimeFormat("ar-EG", {
+      timeZone: "Africa/Cairo",
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric"
+    }).format(new Date());
+  }
+  if (/(الساعة كام|الوقت كام|الساعة دلوقتي|الوقت دلوقتي)/i.test(v)) {
+    return "الساعة دلوقتي " + new Intl.DateTimeFormat("ar-EG", {
+      timeZone: "Africa/Cairo",
+      hour: "numeric",
+      minute: "2-digit"
+    }).format(new Date());
+  }
+  return "مش قادر أوصل لموديل الرد دلوقتي، فمش هفتي عليك في الإجابة. جرّب الرسالة تاني بعد شوية.";
 }
 
 function voiceFallbackText(request) {
@@ -580,17 +596,25 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.`
   ].filter(Boolean).join("\n\n");
 
-  const models = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", GEMINI_MODEL];
+  const models = [
+    GEMINI_MODEL,
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3.7-flash"
+  ].filter((m, i, a) => m && a.indexOf(m) === i);
 
   let lastError = null;
 
   for (const model of models) {
-    if (lastError?.status === 429) await sleep(3500);
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           method: "POST",
+          signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
             "x-goog-api-key": GEMINI_API_KEY
@@ -602,6 +626,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
           })
         }
       );
+      clearTimeout(timeout);
 
       const data = await response.json();
 
@@ -623,11 +648,10 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 
       lastError = new Error(`Gemini ${response.status} (${model}): ${JSON.stringify(data)}`);
       lastError.status = response.status;
-      if (response.status === 429) console.error(`⏳ Gemini rate limit — switching model after 3.5s: ${model}`);
       console.error(`⚠️ Gemini model failed: ${model} → HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
-      console.error(`⚠️ Gemini request error: ${model}`, error);
+      console.error(`⚠️ Gemini request error: ${model} → ${error.name === "AbortError" ? "timeout 12s" : error.message}`);
     }
   }
 
