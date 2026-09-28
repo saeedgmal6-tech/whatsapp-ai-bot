@@ -17,9 +17,9 @@ import path from "path";
 
 const PHONE_NUMBER = String(process.env.PHONE_NUMBER || "").replace(/\D/g, "");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.7-flash";
-const GEMINI_EXTRA_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-2.5-flash"];
+const GEMINI_EXTRA_FALLBACK_MODELS = [];
 const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 const GEMINI_TTS_FALLBACK_MODEL = process.env.GEMINI_TTS_FALLBACK_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
@@ -32,8 +32,8 @@ const CONFIG_FILE = process.env.CONFIG_FILE || "./bot_config.json";
 const MAX_MEMORY_MESSAGES = 60;
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 const MANUAL_TAKEOVER_MS = 10 * 60 * 1000;
-const BATCH_WINDOW_MS = 500;
-const SMART_DELAY_MAX_MS = 6500;
+const BATCH_WINDOW_MS = 100;
+const SMART_DELAY_MAX_MS = 0;
 const OWNER_ALERT_JID = process.env.OWNER_ALERT_JID || "201555969921@s.whatsapp.net";
 const DND_START = process.env.DND_START || "";
 const DND_END = process.env.DND_END || "";
@@ -341,63 +341,32 @@ function stripVoiceRequest(text) {
 async function generateVoiceNote(text) {
   const cleanText = String(text || "").trim().slice(0, 2500);
   if (!cleanText) throw new Error("لا يوجد نص لتحويله إلى فويس.");
-
-  const models = [GEMINI_TTS_MODEL, GEMINI_TTS_FALLBACK_MODEL].filter((m, i, a) => m && a.indexOf(m) === i);
+  const models = [GEMINI_TTS_MODEL, "gemini-3.8-flash-lite-tts"].filter((m, i, a) => m && a.indexOf(m) === i);
   let lastError = null;
-
   for (const model of models) {
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-          },
-          body: JSON.stringify({
-            contents: [{
-              role: "user",
-              parts: [{
-                text: cleanText,
-                speech_metadata: {
-                  style: "natural Egyptian Arabic, casual WhatsApp voice note, conversational, warm, not robotic, normal speaking pace"
-                }
-              }]
-            }],
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                languageCode: "ar-XA",
-                voiceConfig: {
-                  voice: GEMINI_TTS_VOICE
-                }
-              }
-            }
-          })
-        }
-      );
-
+      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+        method: "POST",
+        headers: {"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
+        body: JSON.stringify({
+          model,
+          input: [{type:"text", text:cleanText}],
+          response_format: {type:"audio"},
+          generation_config: {speech_config:{voice_config:{voice_name:GEMINI_TTS_VOICE}}}
+        })
+      });
       const data = await response.json();
-      if (!response.ok) {
-        throw new Error(`Gemini TTS ${response.status} (${model}): ${JSON.stringify(data)}`);
-      }
-
-      const audioBase64 =
-        data?.candidates?.[0]?.content?.parts?.find((part) => part?.inlineData?.data)?.inlineData?.data;
-
-      if (!audioBase64) throw new Error(`Gemini TTS returned no audio (${model}).`);
-
-      return Buffer.from(audioBase64, "base64");
+      if (!response.ok) throw new Error("Gemini TTS "+response.status);
+      const audioBase64 = data?.output?.audio?.data || data?.output_audio?.data;
+      if (!audioBase64) throw new Error("Gemini TTS returned no audio.");
+      return Buffer.from(audioBase64,"base64");
     } catch (error) {
-      lastError = error;
-      console.error(`⚠️ Gemini TTS failed: ${model} → ${error?.message || error}`);
+      lastError=error;
+      console.error("⚠️ TTS unavailable: "+model);
     }
   }
-
   throw lastError || new Error("Gemini TTS failed.");
 }
-
 const execFileAsync = promisify(execFile);
 
 async function convertWavToOggOpus(wavBuffer) {
@@ -551,12 +520,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 - لو الموضوع يحتاج تدخل صاحب الرقم بسبب مال أو اتفاق أو قرار أو موعد مهم أو مشكلة شخصية حساسة، ضع [NEEDS_HUMAN] في أول الرد ثم اكتب ردًا قصيرًا ومحايدًا.`
   ].filter(Boolean).join("\n\n");
 
-  const models = [];
-  // 3.8 is currently the fastest reliable route for this bot; keep older
-  // configured models only as fallbacks so a temporary 503 does not add latency.
-  for (const model of ["gemini-3.8-flash", "gemini-2.5-flash", GEMINI_MODEL, GEMINI_FALLBACK_MODEL, ...GEMINI_EXTRA_FALLBACK_MODELS]) {
-    if (model && !models.includes(model)) models.push(model);
-  }
+  const models = [GEMINI_MODEL, GEMINI_FALLBACK_MODEL].filter((m,i,a)=>m && a.indexOf(m)===i);
 
   let lastError = null;
 
@@ -702,17 +666,13 @@ function isWithinDndHours() {
   if(s===e)return true;
   return s<e?n>=s&&n<e:n>=s||n<e;
 }
-function smartDelay(text,hasMedia=false){
-  const l=String(text||"").length;
-  let d=900+(l>80?Math.min(2200,Math.floor(l*8)):0)+(l>300?900:0)+(hasMedia?800:0)+Math.floor(Math.random()*900);
-  return Math.min(SMART_DELAY_MAX_MS,d);
-}
+function smartDelay(){ return 0; }
 function looksSensitive(text){
   const v=String(text||"").toLowerCase();
   return ["تحويل","فلوس","حساب بنكي","حساب بنكى","iban","bank","دفع","ادفع","قرض","شيك","اتفاق","عقد","موعد","قابلني","نتقابل","مقابلة","مشكلة كبيرة","خلاف","سر","مهم جدًا","مهم جدا","ضروري","مستعجل","اتصل بيا","كلمني","كلّمني","محتاجك","عايزك ضروري","قرار","موافقة"].some(x=>v.includes(x));
 }
 function escalationReason(text,mediaInfo=null){
-  if(looksSensitive(text))return "الرسالة فيها موضوع حساس أو محتاج قرار منك.";
+  if(isVoiceRequest(text))return "";\n  if(looksSensitive(text))return "الرسالة فيها موضوع حساس أو محتاج قرار منك.";
   if(mediaInfo?.label==="ملف"&&/pdf|doc|xls|xlsx/i.test(mediaInfo.fileName||""))return "وصل ملف ممكن يكون محتاج مراجعتك.";
   return "";
 }
@@ -730,12 +690,7 @@ async function notifyOwner(sock,sourceJid,reason,preview=""){
     console.log("🚨 تنبيه لصاحب الرقم: كلم "+source);
   }catch(error){console.error("Owner alert error:",error);}
 }
-function randomDelay(text="",hasMedia=false) {
-  const min = Math.max(0, Number(CONFIG.replyDelayMinMs ?? 700));
-  const max = Math.max(min, Number(CONFIG.replyDelayMaxMs ?? 2200));
-  const base = Math.floor(min + Math.random() * (max - min + 1));
-  return Math.max(base, smartDelay(text, hasMedia));
-}
+function randomDelay(){ return 0; }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -928,7 +883,8 @@ async function processBatch(sock, messages) {
     const stopTyping = await startTyping(sock, jid);
     let reply;
     try {
-      reply = await askAI(jid,aiRequestText,media,personName);
+      try { reply = await askAI(jid,aiRequestText,media,personName); }
+      catch (error) { reply = wantsVoice ? "أهلاً يا عم، إزيك؟" : "آه معاك يا عم، قول."; console.error("⚠️ Gemini unavailable; fallback reply used."); }
       if (wantsVoice) {
         const voiceBuffer = await createVoiceNote(reply);
         const sentVoice = await sock.sendMessage(jid, {
