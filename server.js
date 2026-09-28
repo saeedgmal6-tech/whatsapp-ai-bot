@@ -24,7 +24,7 @@ const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 const GEMINI_TTS_FALLBACK_MODEL = process.env.GEMINI_TTS_FALLBACK_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
 const BOT_NAME = process.env.BOT_NAME || "سليم";
-const BUILD_ID = "registered-contact-name-and-profile-direct-v3-2026-09-28";
+const BUILD_ID = "smart-web-search-concise-v4-2026-09-28";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth_info";
 const IGNORE_GROUPS = process.env.IGNORE_GROUPS !== "false";
 const MEMORY_FILE = process.env.MEMORY_FILE || "./memory.json";
@@ -94,6 +94,10 @@ const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
 - اقرأ اسم الشخص من جهات اتصال صاحب الرقم عندما يكون متاحًا، وتعامل مع الشخص على أساس هذا الاسم. استخدمه طبيعيًا عند الحاجة، من غير تكرار أو تصنع. لا تغيّر الاسم المحفوظ ولا تخترع اسمًا بديلًا.
 - لا تدّعي إنك إنسان لو اتسألت مباشرة، لكن في المحادثة العادية اكتب بطريقة بشرية طبيعية.
 - الرد فقط على الرسالة الواردة، ومن غير مقدمات أو خاتمة مصطنعة.
+- ممنوع منعًا باتًا إظهار التحليل الداخلي أو خطوات التفكير أو شرح لماذا اخترت الإجابة.
+- ممنوع كتابة The user said أو Looking at أو Response options أو Option 1 أو I need to respond.
+- لا تعرض خيارات للرد. اختر إجابة واحدة فقط وأرسلها.
+- عند توفر نتائج بحث الويب، استخدمها للتحقق من المعلومات الحالية ثم أعطِ الخلاصة فقط.
 
 أهم قاعدة: اقرأ الرسالة والسياق، وبعدها اكتب أول رد طبيعي ممكن شخص مصري يكتبه فعلًا على WhatsApp. متحاولش تستعرض أو تبالغ في الذكاء أو الرسمية. الطبيعي والبساطة أهم من البلاغة.\n- ممنوع أسلوب خدمة العملاء أو الردود الآلية مثل: "بالتأكيد، يسعدني مساعدتك" أو "كيف يمكنني مساعدتك اليوم؟" إلا إذا كان السياق يفرضها.\n- لا تشرح أنك مساعد أو تكرر اسمك إلا عندما يُسأل عن هويتك.\n- خلي الرد كأنه رسالة واتساب عادية: جملة أو جملتين غالبًا، وبنفس عفوية الشخص اللي قدامك.`;
 if (!PHONE_NUMBER) {
@@ -700,12 +704,21 @@ async function askAI(jid, incomingText, media = null, personName = "") {
     parts: userParts.length ? userParts : [{ text: "وصلت رسالة بدون نص." }]
   });
 
+  let webContext = "";
+  if (needsWebSearch(incomingText)) {
+    try {
+      const searchResults = await webSearch(incomingText);
+      if (searchResults) webContext = "نتائج بحث ويب حديثة مرتبطة بسؤال المستخدم:\n" + searchResults;
+    } catch (error) { console.error("⚠️ Web search failed:", error.message); }
+  }
+
   const dynamicPrompt = [
     SYSTEM_PROMPT,
     CONFIG.systemPrompt || "",
     getNameContext(jid, personName),
     getSpecialPersonPrompt(jid, personName),
     getProfileContext(jid),
+    webContext,
     `هوية الشخص الذي تتحدث معه:
 - الاسم المتاح من جهات الاتصال: ${personName || "غير متاح"}.
 - اعتبر هذا الاسم هو اسم الشخص المسجل في جهات اتصال صاحب الرقم، واستخدمه لفهم هوية الشخص والتعامل معه على هذا الأساس.
@@ -764,7 +777,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: dynamicPrompt }] },
             contents,
-            generationConfig: { maxOutputTokens: 280, temperature: 0.5 }
+            generationConfig: { maxOutputTokens: 220, temperature: 0.35 }
           })
         }
       );
@@ -780,7 +793,7 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 
         if (reply) {
           console.log(`✅ Gemini reply succeeded: ${model}`);
-          return reply;
+          return cleanAIReply(reply);
         }
 
         lastError = new Error(`Gemini returned an empty reply from ${model}.`);
@@ -799,6 +812,54 @@ async function askAI(jid, incomingText, media = null, personName = "") {
 
   throw lastError || new Error("All configured Gemini models failed.");
 }
+async function webSearch(query) {
+  const q = String(query || "").trim();
+  if (!q) return "";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7000);
+  try {
+    const url = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q);
+    const response = await fetch(url, { signal: controller.signal, headers: { "User-Agent": "Mozilla/5.0 (WhatsApp-AI-Bot)" } });
+    if (!response.ok) throw new Error("web search " + response.status);
+    const html = await response.text();
+    const results = [];
+    const blocks = html.split(/<div class="result results_links results_links_deep web-result"/i).slice(1, 6);
+    for (const block of blocks) {
+      const titleMatch = block.match(/class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
+      const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a?>/i);
+      const linkMatch = block.match(/class="result__a"[^>]*href="([^"]+)"/i);
+      const clean = (s) => String(s || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'").replace(/\s+/g, " ").trim();
+      const title = clean(titleMatch?.[1]);
+      const snippet = clean(snippetMatch?.[1]);
+      const link = linkMatch?.[1] || "";
+      if (title || snippet) results.push({ title, snippet, link });
+    }
+    return results.map((r, i) => "[" + (i + 1) + "] " + r.title + "\n" + r.snippet + (r.link ? "\n" + r.link : "")).join("\n\n");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function needsWebSearch(text) {
+  const v = String(text || "").trim();
+  return /(?:ابحث|دورلي|دور لي|شوف على النت|شوف عالنت|على النت|علي النت|آخر|اخر|دلوقتي|دلوقت|حاليًا|حاليا|اليوم|النهارده|النهاردة|الآن|الان|تأكد|اتأكد|متأكد|خبر|أخبار|سعر|أسعار|موعد|مواعيد|نتيجة|نتائج|تحديث|حديث|جديد|الجديد|مين كسب|مين فاز|كم سعر|بكام|available|latest|today|current|news|price)/i.test(v);
+}
+
+function cleanAIReply(reply) {
+  let v = String(reply || "").trim();
+  if (!v) return v;
+  const bad = /(?:^|\n)(?:The user said|Looking at|The user|I am |I need to |Response options|Option \d+|Let's keep it simple|Actually,|In response to|The most natural|I should respond|The persona is)/i;
+  if (bad.test(v)) {
+    const quoted = [...v.matchAll(/["“”]([^"“”]{1,240})["“”]/g)]
+      .map(m => m[1].trim())
+      .filter(x => x && !/^(?:The user|Option|Response|Goal|Context)/i.test(x));
+    if (quoted.length) return quoted[quoted.length - 1];
+    const arabicLines = v.split(/\n+/).map(x => x.trim()).filter(x => /[\u0600-\u06FF]/.test(x));
+    if (arabicLines.length) return arabicLines[arabicLines.length - 1].replace(/^[-*]\s*/, "").trim();
+  }
+  return v.replace(/^(?:الرد النهائي|الإجابة النهائية|Final answer)\s*[:：-]?\s*/i, "").trim();
+}
+
 function isGroup(jid) {
   return String(jid || "").endsWith("@g.us");
 }
